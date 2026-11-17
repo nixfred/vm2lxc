@@ -9,6 +9,7 @@
 #   FAKE_FAIL    comma list of key:N, fail the Nth call of key (key = tool, or zfs.<verb>,
 #                or losetup.attach / losetup.detach). Simulates a failure at that step.
 #   FAKE_SLEEP_LSBLK  seconds to sleep inside lsblk (so a test can signal a running inspect)
+#   FAKE_SLEEP_DESTROY seconds to sleep inside `zfs destroy` (a window to signal a running teardown)
 #
 # It is stricter than the real tools where that helps catch bugs: `zfs destroy` and `umount`
 # reject any flag, `lvremove` insists on exactly `-y <lv>`, `losetup -d` and `lvremove` fail
@@ -134,6 +135,7 @@ case $name in
           echo "fake zfs: unsupported flags or arguments to destroy: $*" >&2
           exit 2
         }
+        [[ -z ${FAKE_SLEEP_DESTROY:-} ]] || sleep "$FAKE_SLEEP_DESTROY"
         f=$(zrec "$1")
         [[ -f $f ]] || {
           echo "cannot open '$1': dataset does not exist" >&2

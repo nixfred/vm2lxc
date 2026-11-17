@@ -36,7 +36,12 @@ vm_run_state() { # vmid -> running|stopped|unknown
 INSPECT_OUT_FD=1 INSPECT_ERR_FD=2
 inspect_trap() {
   local rc=$?
-  trap - EXIT INT TERM
+  trap - EXIT
+  # A signal that arrives WHILE we are tearing down must not abort the teardown: that would
+  # leave exactly the objects we are removing (found on the real host: SIGTERM at the end of a
+  # run killed the teardown halfway and left a snapshot LV). So ignore them from here on;
+  # SIGKILL still works, and `vm2lxc cleanup` recovers from the journal.
+  trap '' INT TERM HUP
   if ((INSPECT_ARMED)); then
     INSPECT_ARMED=0
     {
@@ -99,6 +104,7 @@ cmd_inspect() {
   trap inspect_trap EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
+  trap 'exit 129' HUP # the ssh session dropping must still tear down
 
   printf '\nExecuting. Journal: %s\n' "$JOURNAL"
   run_apply || die "$?" "the plan failed part-way (everything created so far is being torn down)"

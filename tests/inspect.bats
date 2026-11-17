@@ -180,6 +180,50 @@ no_tool_called() {
   grep -q "tearing down run rtest01" "$BATS_TEST_TMPDIR/out"
 }
 
+@test "run: SIGHUP (the ssh session dropping) mid-run still tears everything down (exit 129)" {
+  seed_vm100
+  FAKE_SLEEP_LSBLK=2 VM2LXC_TEST_EXEC=1 VM2LXC_RUN_ID=rtest01 VM2LXC_FIXTURE_DIR="$FIXTURES/pve8" \
+    "$VM2LXC" inspect 100 --yes >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  local pid=$! i
+  for i in $(seq 1 80); do
+    zfs_has "$C0" && break
+    sleep 0.1
+  done
+  kill -HUP "$pid"
+  local rc=0
+  wait "$pid" || rc=$?
+  [ "$rc" -eq 129 ]
+  assert_nothing_left
+  zfs_has "$Z1"
+  [[ -z $(runs_open) ]]
+}
+
+@test "run: a second SIGTERM WHILE tearing down does not abort the teardown (real-host finding)" {
+  seed_vm100
+  FAKE_SLEEP_LSBLK=2 FAKE_SLEEP_DESTROY=1 VM2LXC_TEST_EXEC=1 VM2LXC_RUN_ID=rtest01 VM2LXC_FIXTURE_DIR="$FIXTURES/pve8" \
+    "$VM2LXC" inspect 100 --yes >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  local pid=$! i
+  for i in $(seq 1 80); do
+    zfs_has "$C0" && break
+    sleep 0.1
+  done
+  kill -TERM "$pid" # first signal: the trap starts the teardown once lsblk returns
+  for i in $(seq 1 100); do
+    fake_calls zfs | grep -q '^zfs destroy' && break # the teardown is now INSIDE a slow destroy
+    sleep 0.1
+  done
+  fake_calls zfs | grep -q '^zfs destroy'
+  kill -TERM "$pid" # second signal, during the teardown
+  kill -HUP "$pid"  # and a hang-up for good measure
+  local rc=0
+  wait "$pid" || rc=$?
+  [ "$rc" -eq 143 ]
+  assert_nothing_left
+  zfs_has "$Z1"
+  [[ -z $(runs_open) ]]
+  grep -q '^CLOSED$' "$VM2LXC_STATE_DIR/runs/rtest01/journal"
+}
+
 @test "run: a held lock refuses the run (77) before anything is created" {
   seed_vm100
   mkdir -p "$VM2LXC_STATE_DIR"
