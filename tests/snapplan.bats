@@ -115,3 +115,11 @@ setup() {
   id=$(snap_gen_run_id)
   [[ $id =~ $RE_RUNID ]]
 }
+
+@test "an LVM path whose VG or LV starts with '-' or '.' is refused by the planner" {
+  plan_disks 101 rtest01 lvmthin "scsi0:/dev/-x/vm-101-disk-0:rootfs" && return 1
+  [[ $PLAN_ERR == *"expected /dev/<vg>/<lv>"* ]]
+  plan_disks 101 rtest01 lvmthin "scsi0:/dev/pve/-vm-101-disk-0:rootfs" && return 1
+  plan_disks 101 rtest01 lvmthin "scsi0:/dev/.hidden/vm-101-disk-0:rootfs" && return 1
+  plan_disks 101 rtest01 lvmthin "scsi0:/dev/pve/vm-101-disk-0:rootfs"
+}

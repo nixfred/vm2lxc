@@ -16,7 +16,7 @@
 
 RE_RUNID='^[a-z][a-z0-9]{3,30}$'
 RE_ZDS='^[A-Za-z0-9_][A-Za-z0-9_.:-]*(/[A-Za-z0-9_][A-Za-z0-9_.:-]*)+$'
-RE_VGLV='^/dev/([A-Za-z0-9_+.-]+)/([A-Za-z0-9_+.-]+)$'
+RE_VGLV='^/dev/([A-Za-z0-9_+][A-Za-z0-9_+.-]*)/([A-Za-z0-9_+][A-Za-z0-9_+.-]*)$' # no leading - or . (option injection, hidden names)
 
 PLAN=()
 PLAN_ERR=""

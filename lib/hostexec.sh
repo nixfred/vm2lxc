@@ -26,10 +26,10 @@ RE_Z_CLONE="^${_ZN}(/${_ZN})*/vm2lxc-[0-9]+-([a-z][a-z0-9]{3,30})-[a-z]+[0-9]+\$
 RE_Z_ANY='^[A-Za-z0-9_./:@-]+$'
 RE_DEV_OURS='^/dev/zvol/.+/vm2lxc-[0-9]+-[a-z][a-z0-9]{3,30}-[a-z]+[0-9]+(-part[0-9]+)?$'
 
-RE_LV_SNAP='^([A-Za-z0-9_+.-]+)/vm2lxc-([0-9]+)-([a-z][a-z0-9]{3,30})-([a-z]+[0-9]+)$' # 1 vg 2 vmid 3 run 4 key
+RE_LV_SNAP='^([A-Za-z0-9_+][A-Za-z0-9_+.-]*)/vm2lxc-([0-9]+)-([a-z][a-z0-9]{3,30})-([a-z]+[0-9]+)$' # 1 vg 2 vmid 3 run 4 key
 RE_LV_NAME='^vm2lxc-[0-9]+-([a-z][a-z0-9]{3,30})-[a-z]+[0-9]+$'                            # 1 run
-RE_LV_ORIGIN='^[A-Za-z0-9_+.-]+/[A-Za-z0-9_+.-]+$'
-RE_DEV_LVSNAP='^/dev/[A-Za-z0-9_+.-]+/vm2lxc-[0-9]+-[a-z][a-z0-9]{3,30}-[a-z]+[0-9]+$'
+RE_LV_ORIGIN='^[A-Za-z0-9_+][A-Za-z0-9_+.-]*/[A-Za-z0-9_+][A-Za-z0-9_+.-]*$'
+RE_DEV_LVSNAP='^/dev/[A-Za-z0-9_+][A-Za-z0-9_+.-]*/vm2lxc-[0-9]+-[a-z][a-z0-9]{3,30}-[a-z]+[0-9]+$'
 RE_LOOP='^(/dev/loop[0-9]+)(p[0-9]+)?$'
 
 # Loop devices this process attached, or found via `losetup -j <our snapshot device>`.
@@ -158,7 +158,7 @@ hc_lvm() {
   case $verb in
     lvs) # lvs --noheadings --separator | -o lv_name,lv_tags,origin,lv_attr <vg>
       [[ $# -eq 7 && $2 == --noheadings && $3 == --separator && $4 == '|' && $5 == -o &&
-        $6 == lv_name,lv_tags,origin,lv_attr && $7 =~ ^[A-Za-z0-9_+.-]+$ ]] || {
+        $6 == lv_name,lv_tags,origin,lv_attr && $7 =~ ^[A-Za-z0-9_+][A-Za-z0-9_+.-]*$ ]] || {
         refuse "lvs: unexpected arguments"
         return
       }
@@ -247,7 +247,12 @@ host_cmd() {
       # shellcheck disable=SC2294  # eval of a validated integer: "exec 10>&-"
       if [[ $fd =~ ^[0-9]+$ ]] && ((fd > 2)); then eval "exec $fd>&-"; fi
     done
-    LVM_SUPPRESS_FD_WARNINGS=1 exec "$bin" "$@"
+    # A hung storage command (LVM lock contention is real) must not wedge the run and its
+    # teardown: `kill -TERM` on us is deferred until the foreground child exits. So every
+    # command is bounded. --foreground keeps it in our process group so Ctrl-C still reaches it.
+    local limit=${VM2LXC_CMD_TIMEOUT:-120}
+    [[ $limit =~ ^[0-9]+$ ]] || limit=120
+    LVM_SUPPRESS_FD_WARNINGS=1 exec timeout --foreground --kill-after=5 "$limit" "$bin" "$@"
   ) </dev/null
 }
 

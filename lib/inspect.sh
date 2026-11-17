@@ -148,6 +148,11 @@ cmd_cleanup() {
     printf 'Nothing to clean up: no unfinished vm2lxc run in %s.\n' "$(state_dir)"
     return 0
   fi
+  # Without --yes we do not take the lock, so say if someone else is holding it right now:
+  # a run listed below may be IN PROGRESS rather than abandoned.
+  if [[ -e $(state_dir)/lock ]] && ! flock -n "$(state_dir)/lock" true 2>/dev/null; then
+    printf 'Note: a vm2lxc run holds the lock right now, so a run listed below may still be in progress.\n\n'
+  fi
   printf 'Unfinished vm2lxc runs (%s):\n' "$(state_dir)"
   for run in "${open[@]}"; do
     journal_load "$run" || continue

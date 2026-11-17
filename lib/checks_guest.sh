@@ -9,6 +9,10 @@
 #   * it receives one argument: the root of the read-only guest filesystem
 #   * it reports with `finding <level> guest-<id> guest "<message>"` (zero or more times)
 #   * it must not write anything under that root
+#   * the guest is UNTRUSTED: an absolute symlink inside it (/etc -> /etc, /var/lib/x -> /root)
+#     points at the HOST, not at the guest. Never `cat`, `[[ -f ]]` or `grep` a path under the
+#     root as if it were safe: resolve it chroot-style (every symlink re-rooted under the guest
+#     root) or refuse a path that escapes. The first real guest check must bring that helper.
 #   * the runner calls it only when GUEST_ROOT is set; anything without an
 #     implementation is reported pending.
 # Expected verdicts when implemented are listed per check below (decisions D5, D3).

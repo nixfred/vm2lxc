@@ -267,6 +267,19 @@ crash_after_clone() { # a run that died after the snapshot and the clone were ma
   zfs_has "$Z1@vm2lxc-rtest01"
 }
 
+@test "cleanup without --yes warns when another run holds the lock (the listed run may be in progress)" {
+  crash_after_clone
+  mkdir -p "$VM2LXC_STATE_DIR"
+  exec 9>"$VM2LXC_STATE_DIR/lock"
+  flock -n 9
+  go cleanup
+  exec 9>&-
+  [ "$status" -eq 0 ]
+  [[ $output == *"a vm2lxc run holds the lock right now"*"may still be in progress"* ]]
+  go cleanup
+  [[ $output != *"holds the lock"* ]]
+}
+
 @test "cleanup --yes finishes a crashed run, closes its journal, and a second cleanup has nothing to do" {
   crash_after_clone
   go cleanup --yes

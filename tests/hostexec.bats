@@ -196,6 +196,47 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   [ -e "$FAKE_STATE/leaks.log" ]
 }
 
+@test "option injection: names with a leading '-' or '.' never reach an LVM command line" {
+  refused lvcreate -s -n vm2lxc-101-rtest01-scsi0 --addtag vm2lxc-rtest01 -x/vm-101-disk-0
+  refused lvcreate -s -n vm2lxc-101-rtest01-scsi0 --addtag vm2lxc-rtest01 pve/-vm-101-disk-0
+  refused lvcreate -s -n vm2lxc-101-rtest01-scsi0 --addtag vm2lxc-rtest01 .hidden/vm-101-disk-0
+  refused lvremove -y -x/vm2lxc-101-rtest01-scsi0
+  refused lvchange -pr --version/vm2lxc-101-rtest01-scsi0
+  refused lvchange -ay -K -x/vm2lxc-101-rtest01-scsi0
+  refused lvs --noheadings --separator '|' -o lv_name,lv_tags,origin,lv_attr -x
+  refused lvs --noheadings --separator '|' -o lv_name,lv_tags,origin,lv_attr --version
+  refused losetup -j /dev/-x/vm2lxc-101-rtest01-scsi0
+}
+
+@test "a storage ID or volume name with a leading '-' is never handed to pvesm" {
+  load_libs common pve
+  # the fixture lookup WOULD find these names, so only the name guard can reject them
+  local fx="$BATS_TEST_TMPDIR/fx"
+  mkdir -p "$fx"
+  printf '%s\n' '-h:vm-100-disk-0 /dev/zvol/x/y' 'local-zfs:--help /dev/zvol/x/z' 'local-zfs:vm-100-disk-0 /dev/zvol/rpool/data/vm-100-disk-0' >"$fx/volume-paths.txt"
+  export VM2LXC_FIXTURE_DIR="$fx"
+  run pve_volume_path "-h:vm-100-disk-0"
+  [ "$status" -ne 0 ]
+  run pve_volume_path "local-zfs:--help"
+  [ "$status" -ne 0 ]
+  run pve_volume_path "local-zfs:vm-100-disk-0"
+  [ "$status" -eq 0 ]
+  [ "$output" = "/dev/zvol/rpool/data/vm-100-disk-0" ]
+}
+
+@test "a hung storage command is cut off by the per-command timeout, and the teardown still completes" {
+  zfs_one
+  export FAKE_SLEEP_LSBLK=30 VM2LXC_CMD_TIMEOUT=1 VM2LXC_WAIT_TRIES=1
+  local t0=$SECONDS rc=0
+  run_apply 2>"$BATS_TEST_TMPDIR/err" || rc=$?
+  [ "$rc" -ne 0 ]
+  [ $((SECONDS - t0)) -lt 15 ] # nowhere near the 30 seconds the fake would have slept
+  unset FAKE_SLEEP_LSBLK
+  run_teardown "$RUN"
+  assert_nothing_left
+  zfs_has "$Z1"
+}
+
 # --- ZFS lifecycle -----------------------------------------------------------------------------
 
 @test "zfs: full lifecycle leaves the source untouched and everything of ours gone, in the right order" {
