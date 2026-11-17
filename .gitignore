@@ -5,3 +5,6 @@
 
 # local task backlog (tasks-axi), not part of the project
 /backlog.md
+
+# independent review reports (box jobs), not part of the project
+/.review/

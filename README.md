@@ -11,7 +11,7 @@ Plain bash and `jq`. No AI in the tool. No network access. MIT licensed.
     <td align="center"><b>Status</b><br>alpha</td>
     <td align="center"><b>Proxmox VE</b><br>9.2 verified<br>8.x untested</td>
     <td align="center"><b>Storage</b><br>LVM-thin verified<br>ZFS: fake only</td>
-    <td align="center"><b>Tests</b><br>253, 0 skipped</td>
+    <td align="center"><b>Tests</b><br>256, 0 skipped</td>
     <td align="center"><b>Converts VMs?</b><br>not yet</td>
   </tr>
 </table>
@@ -226,7 +226,7 @@ This project's claim is "safe", so the evidence matters more than the claim.
   (`SIGKILL`, `SIGTERM`, `SIGHUP`). `SIGKILL` leaves at most a stray snapshot, and `cleanup --yes` restored
   the exact baseline each time. The sweep found two genuine gaps (a signal during teardown aborted it;
   `SIGHUP` had no handler), both fixed and re-verified.
-- **253 tests, 0 skipped**, plus `shellcheck` clean. A **stateful fake** of `zfs`, LVM, `losetup` and `mount`
+- **256 tests, 0 skipped**, plus `shellcheck` clean. A **stateful fake** of `zfs`, LVM, `losetup` and `mount`
   with fault injection covers every row of the failure matrix: snapshot fails, crash after snapshot, the
   second clone fails, the device never appears, a mount fails halfway, teardown fails midway, teardown twice,
   wrong stamp, wrong origin, pre-existing objects, a held lock, `SIGTERM`/`SIGHUP` mid-run.
