@@ -1,0 +1,8 @@
+Name             Type     Status           Total            Used       Available        %
+ceph-pool         rbd     active       314572800       104857600       209715200   33.33%
+local             dir     active        98497780        13421580        80026808   13.63%
+local-lvm     lvmthin     active       365072384        61237248       303835136   16.77%
+local-zfs     zfspool     active       471859200       157286400       314572800   33.33%
+nfs-iso           nfs     active       976762584       419430400       557332184   42.94%
+old-lvm           lvm     active       209715200       104857600       104857600   50.00%
+tank-off      zfspool   disabled               0               0               0     N/A
