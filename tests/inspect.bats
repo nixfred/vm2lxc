@@ -259,7 +259,7 @@ crash_after_clone() { # a run that died after the snapshot and the clone were ma
   plan_disks 100 rtest01 zfspool "scsi0:/dev/zvol/$Z1:rootfs"
   journal_new 100 rtest01
   PLAN=("${PLAN[@]:0:2}")
-  run_apply
+  VM2LXC_TEST_EXEC=1 run_apply # in-process; the switch lasts for this call only, later CLI runs stay without it
   zfs_has "$C0"
 }
 
@@ -335,4 +335,86 @@ crash_after_clone() { # a run that died after the snapshot and the clone were ma
 @test "cleanup takes no arguments" {
   go cleanup extra
   [ "$status" -eq 64 ]
+}
+
+# --- findings of the independent box review (2026-11-17) --------------------------------------------------------
+
+@test "F4: the reader going away (| head) mid-run still tears everything down, even though every message now fails" {
+  seed_vm100
+  local rc=0
+  # The reader leaves once the run has STARTED ("Executing."): the tool then writes into a dead pipe (SIGPIPE)
+  # while the slow lsblk runs, and again for every message of its own teardown. (A reader that leaves earlier,
+  # during the plan printout, proves nothing: no run and no trap exist yet.)
+  FAKE_SLEEP_LSBLK=1 VM2LXC_TEST_EXEC=1 VM2LXC_RUN_ID=rtest01 VM2LXC_FIXTURE_DIR="$FIXTURES/pve8" \
+    "$VM2LXC" inspect 100 --yes 2>/dev/null | sed '/^Executing/q' >/dev/null
+  rc=${PIPESTATUS[0]}
+  [ "$rc" -eq 141 ] || { echo "expected exit 141 (SIGPIPE), got $rc"; return 1; }
+  [ -f "$VM2LXC_STATE_DIR/runs/rtest01/journal" ] # the run really started
+  assert_nothing_left
+  zfs_has "$Z1"
+  [[ -z $(runs_open) ]]
+  grep -q '^CLOSED$' "$VM2LXC_STATE_DIR/runs/rtest01/journal"
+}
+
+@test "F5: a guest whose /etc and /usr are absolute symlinks to the HOST is not a guest root" {
+  local mnt="$BATS_TEST_TMPDIR/g"
+  mkdir -p "$mnt"
+  ln -s /etc "$mnt/etc"
+  ln -s /usr "$mnt/usr"
+  MOUNTS=("scsi0|rootfs|/dev/x|$mnt|ext4")
+  run pick_guest_root
+  [ "$status" -eq 1 ]
+  [ -z "$GUEST_ROOT" ]
+}
+
+@test "F5: a real root and a relative symlink that stays inside the guest are accepted" {
+  local mnt="$BATS_TEST_TMPDIR/g"
+  mkdir -p "$mnt/usr/share/etc-real"
+  ln -s usr/share/etc-real "$mnt/etc" # inside the guest: fine
+  MOUNTS=("scsi0|rootfs|/dev/x|$mnt|ext4")
+  pick_guest_root
+  [ "$GUEST_ROOT" = "$mnt" ]
+  path_inside_root "$mnt" "$mnt/etc"
+  must_fail path_inside_root "$mnt" /etc
+  must_fail path_inside_root "$mnt" "$mnt/does-not-exist"
+}
+
+# F11: the VM is read again AFTER the run lock is taken
+reval_setup() { # builds the plan the way cmd_inspect does, from a private copy of the fixture host
+  REVAL_FX="$BATS_TEST_TMPDIR/fx"
+  cp -r "$FIXTURES/pve8" "$REVAL_FX"
+  export VM2LXC_FIXTURE_DIR="$REVAL_FX"
+  host_context_load
+  vm_context_load 100
+  snap_plan_build 100 rtest01
+}
+
+@test "F11: re-validation passes when nothing changed" {
+  reval_setup
+  run inspect_revalidate 100 rtest01
+  [ "$status" -eq 0 ]
+}
+
+@test "F11: a lock that appeared between the plan and the run lock refuses the run" {
+  reval_setup
+  printf 'lock: backup\n' >>"$REVAL_FX/qm-config-100.txt"
+  run inspect_revalidate 100 rtest01
+  [ "$status" -eq 1 ]
+  [[ $output == *"became locked (lock: backup)"* ]]
+}
+
+@test "F11: a VM whose disks changed between the plan and the run lock refuses the run" {
+  reval_setup
+  sed -i 's#^scsi0: local-zfs:vm-100-disk-0#scsi0: local-zfs:vm-102-disk-0#' "$REVAL_FX/qm-config-100.txt"
+  run inspect_revalidate 100 rtest01
+  [ "$status" -eq 1 ]
+  [[ $output == *"changed (its disks or paths)"* ]]
+}
+
+@test "F11: a VM that disappeared between the plan and the run lock refuses the run" {
+  reval_setup
+  rm "$REVAL_FX/qm-config-100.txt"
+  run inspect_revalidate 100 rtest01
+  [ "$status" -eq 1 ]
+  [[ $output == *"can no longer be read"* ]]
 }

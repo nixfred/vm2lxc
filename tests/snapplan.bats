@@ -123,3 +123,13 @@ setup() {
   plan_disks 101 rtest01 lvmthin "scsi0:/dev/.hidden/vm-101-disk-0:rootfs" && return 1
   plan_disks 101 rtest01 lvmthin "scsi0:/dev/pve/vm-101-disk-0:rootfs"
 }
+
+@test "snap_gen_run_id uses all 16 bits of its suffix (RANDOM alone has only 15)" {
+  local ids id hi=0 _
+  ids=$(for _ in $(seq 1 400); do snap_gen_run_id; echo; done)
+  while read -r id; do
+    [[ $id =~ ^r[0-9]{10}([0-9a-f]{4})$ ]] || { echo "bad run id: $id"; return 1; }
+    if ((16#${BASH_REMATCH[1]} >= 32768)); then hi=1; fi
+  done <<<"$ids"
+  [ "$hi" -eq 1 ] # with 15 bits the top bit is never set: 400 draws all below 0x8000 has odds of 2^-400
+}

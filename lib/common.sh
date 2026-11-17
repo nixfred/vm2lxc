@@ -29,6 +29,19 @@ OPT_HELP=0
 OPT_VERSION=0
 POSITIONAL=()
 
+# sanitize_text <text>: neutralise everything a terminal would act on; the result is in REPLY (no
+# subshell, so it is cheap enough to run on every config value). The ASCII control class alone is
+# locale-dependent: in the C locale a UTF-8 C1 control (U+009B, the 8-bit CSI = C2 9B) passes through,
+# and so do bidi overrides (U+202E) that can make a name read backwards.
+sanitize_text() {
+  local LC_ALL=C v=$1
+  v=${v//[[:cntrl:]]/?}
+  v=${v//$'\xc2'[$'\x80'-$'\x9f']/??}                  # C1 controls
+  v=${v//$'\xe2\x80'[$'\x8e\x8f\xaa'-$'\xae']/???}     # LRM, RLM and the bidi embeddings/overrides
+  v=${v//$'\xe2\x81'[$'\xa6'-$'\xa9']/???}             # the bidi isolates
+  REPLY=$v
+}
+
 color_init() {
   if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
     C_RED=$'\033[1;31m'

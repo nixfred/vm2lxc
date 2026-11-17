@@ -24,7 +24,8 @@ PLAN_SOURCES=() # source datasets / LVs: the objects that must never be touched 
 PLAN_DISKS=()   # "key|target|device" per data disk, for the printout
 
 snap_gen_run_id() {
-  printf 'r%s%04x' "$(date +%s)" $((RANDOM % 65536))
+  # RANDOM is 15 bits (0..32767): combine two draws for the 4 hex digits the name promises
+  printf 'r%s%04x' "$(date +%s)" $(((RANDOM << 1 ^ RANDOM) & 0xffff))
 }
 
 # snap_plan_build <vmid> <runid>: uses the loaded VM context (D_* arrays, ST_TYPE).

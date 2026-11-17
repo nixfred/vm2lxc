@@ -6,8 +6,10 @@
 # ours is left" and "things were destroyed in the right order" (calls.log keeps the order).
 #
 #   FAKE_STATE   state directory (required)
-#   FAKE_FAIL    comma list of key:N, fail the Nth call of key (key = tool, or zfs.<verb>,
-#                or losetup.attach / losetup.detach). Simulates a failure at that step.
+#   FAKE_FAIL    comma list of key:N[:rc], fail the Nth call of key with exit code rc (default 1).
+#                key = tool, or zfs.<verb>, or losetup.attach / .detach / .list.
+#   FAKE_ZD_MAP  comma list clone=/dev/zdN: lsblk then reports the KERNEL name of that zvol, as the
+#                real tool does, instead of the /dev/zvol/<clone> path it was given.
 #   FAKE_SLEEP_LSBLK  seconds to sleep inside lsblk (so a test can signal a running inspect)
 #   FAKE_SLEEP_DESTROY seconds to sleep inside `zfs destroy` (a window to signal a running teardown)
 #
@@ -38,9 +40,10 @@ maybe_fail() { # key
   printf '%s' "$n" >"$S/count/$key"
   IFS=, read -ra specs <<<"${FAKE_FAIL:-}"
   for spec in "${specs[@]}"; do
-    if [[ $spec == "$key:$n" ]]; then
+    IFS=: read -r k c rc <<<"$spec" # key:N[:exit-code], exit code defaults to 1
+    if [[ $k == "$key" && $c == "$n" ]]; then
       echo "fake $name: injected failure ($spec)" >&2
-      exit 1
+      exit "${rc:-1}"
     fi
   done
 }
@@ -63,6 +66,16 @@ dev_exists() {
     /dev/loop*)
       base=${d%%p[0-9]*}
       [[ $d =~ ^/dev/loop[0-9]+ ]] && [[ -f $S/loops/${BASH_REMATCH[0]#/dev/loop} ]]
+      ;;
+    /dev/zd*)
+      [[ $d =~ ^(/dev/zd[0-9]+) ]] || return 1
+      base=${BASH_REMATCH[1]}
+      local ent
+      IFS=, read -ra ents <<<"${FAKE_ZD_MAP:-}"
+      for ent in "${ents[@]}"; do
+        [[ ${ent#*=} == "$base" && -f $(zrec "${ent%%=*}") ]] && return 0
+      done
+      return 1
       ;;
     *) return 1 ;;
   esac
@@ -113,20 +126,36 @@ case $name in
         { echo "kind=clone"; echo "origin=$snap"; printf '%s\n' "${props[@]}"; } >"$(zrec "$clone")"
         echo "$clone" >>"$(zrec "$snap").clones"
         ;;
-      list)
-        [[ -f $(zrec "$5") ]] || {
-          echo "cannot open '$5': dataset does not exist" >&2
+      list) # list -H -o name -t <snapshot|volume> <name>
+        [[ $# -eq 7 && $5 == -t ]] || {
+          echo "fake zfs: unsupported list arguments: $*" >&2
+          exit 2
+        }
+        [[ -f $(zrec "$7") ]] || {
+          echo "cannot open '$7': dataset does not exist" >&2
           exit 1
         }
-        echo "$5"
+        echo "$7"
         ;;
-      get)
-        f=$(zrec "$6")
+      get) # get -H -o value [-s local] <prop> <name>
+        if [[ $5 == -s ]]; then
+          [[ $6 == local ]] || exit 2
+          prop=$7 target=$8
+          src_local=1
+        else
+          prop=$5 target=$6
+          src_local=0
+        fi
+        f=$(zrec "$target")
         [[ -f $f ]] || {
-          echo "cannot open '$6': dataset does not exist" >&2
+          echo "cannot open '$target': dataset does not exist" >&2
           exit 1
         }
-        v=$(getp "$f" "$5")
+        v=$(getp "$f" "$prop")
+        # a property INHERITED from a parent is not local: the fake models it as "inherited:<prop>=..."
+        if ((src_local)) && [[ -z $v ]]; then
+          exit 0
+        fi
         echo "${v:--}"
         ;;
       destroy)
@@ -239,6 +268,7 @@ case $name in
         echo "/dev/loop$n"
         ;;
       -j)
+        maybe_fail losetup.list
         for l in "$S"/loops/*; do
           [[ -f $l ]] || continue
           [[ $(cat "$l") == "$2" ]] && echo "/dev/loop${l##*/}: [0000]:0 (/dev/dm-0)"
@@ -268,19 +298,49 @@ case $name in
   lsblk)
     maybe_fail lsblk
     [[ -z ${FAKE_SLEEP_LSBLK:-} ]] || sleep "$FAKE_SLEEP_LSBLK"
-    dev=$3
+    [[ $# -eq 6 && $1 == -P && $2 == -n && $3 == -p && $4 == -o && $5 == NAME,FSTYPE,TYPE ]] || {
+      echo "fake lsblk: unsupported arguments: $*" >&2
+      exit 2
+    }
+    dev=$6
     dev_exists "$dev" || {
       echo "lsblk: $dev: not a block device" >&2
       exit 32
     }
+    # a template line is: NAME [FSTYPE|-] [TYPE]; type is inferred when it is missing
     if [[ $dev == /dev/loop* ]]; then
       n=${dev#/dev/loop}
       tpl="$S/lsblk/$(enc "$(cat "$S/loops/$n")")"
-      if [[ -f $tpl ]]; then sed "s#@LOOP@#$dev#g" "$tpl"; else echo "$dev"; fi
+      if [[ -f $tpl ]]; then body=$(sed "s#@LOOP@#$dev#g" "$tpl"); else body=$dev; fi
+      root=$dev
     else
       tpl="$S/lsblk/$(enc "$dev")"
-      if [[ -f $tpl ]]; then cat "$tpl"; else echo "$dev"; fi
+      if [[ -f $tpl ]]; then body=$(cat "$tpl"); else body=$dev; fi
+      root=$dev
     fi
+    clone="" kern=""
+    if [[ $dev == /dev/zvol/* && -n ${FAKE_ZD_MAP:-} ]]; then
+      IFS=, read -ra ents <<<"$FAKE_ZD_MAP"
+      for ent in "${ents[@]}"; do
+        [[ /dev/zvol/${ent%%=*} == "$dev" ]] && clone=/dev/zvol/${ent%%=*} kern=${ent#*=}
+      done
+    fi
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      read -r nm fs ty <<<"$line"
+      [[ ${fs:--} == - ]] && fs=""
+      if [[ -z ${ty:-} ]]; then
+        if [[ $nm == "$root" ]]; then
+          [[ $root == /dev/loop* ]] && ty=loop || ty=disk
+        elif [[ $nm =~ (p[0-9]+|-part[0-9]+)$ ]]; then ty=part
+        else ty=lvm; fi
+      fi
+      if [[ -n $kern ]]; then # the real lsblk prints KERNEL names for zvols: /dev/zd16, /dev/zd16p1
+        nm=${nm/#"$clone"-part/${kern}p}
+        nm=${nm/#"$clone"/$kern}
+      fi
+      printf 'NAME="%s" FSTYPE="%s" TYPE="%s"\n' "$nm" "$fs" "$ty"
+    done <<<"$body"
     ;;
 
   mount)
@@ -327,8 +387,15 @@ case $name in
     echo "UMOUNTED $1" >>"$S/events.log"
     ;;
   mountpoint)
+    maybe_fail mountpoint
     [[ $1 == -q ]] || exit 2
-    grep -q "|$2|" "$S/mounts" 2>/dev/null
+    [[ -e $2 ]] || {
+      echo "mountpoint: $2: No such file or directory" >&2
+      exit 32
+    }
+    # util-linux: 0 = a mountpoint, 1 = exists but is not one (never 2)
+    if [[ -f $S/mounts ]] && grep -q "|$2|" "$S/mounts"; then exit 0; fi
+    exit 1
     ;;
   udevadm) exit 0 ;;
 

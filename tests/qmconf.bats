@@ -185,3 +185,30 @@ EOF
     [[ ${QMC[$k]} != *$'\033'* && ${QMC[$k]} != *$'\007'* ]]
   done
 }
+
+# --- F9: neutralising what a terminal would act on, in any locale ------------------------------------------------
+
+@test "sanitize_text: ASCII controls, UTF-8 C1 controls (the 8-bit CSI) and bidi overrides are neutralised, in any locale" {
+  load_libs common
+  local l
+  for l in C C.UTF-8 en_US.UTF-8; do
+    LC_ALL=$l sanitize_text $'a\033[31mb'
+    [ "$REPLY" = $'a?[31mb' ]
+    LC_ALL=$l sanitize_text $'n\xc2\x9b31m' # U+009B: one 8-bit CSI, the same effect as ESC [
+    [ "$REPLY" = 'n??31m' ]
+    LC_ALL=$l sanitize_text $'x\xe2\x80\xaeevil' # U+202E right-to-left override
+    [ "$REPLY" = 'x???evil' ]
+    LC_ALL=$l sanitize_text $'x\xe2\x81\xa6y' # U+2066 isolate
+    [ "$REPLY" = 'x???y' ]
+  done
+}
+
+@test "sanitize_text: ordinary text, spaces and legitimate non-ASCII survive untouched" {
+  load_libs common
+  sanitize_text 'web server 1.2 (prod)'
+  [ "$REPLY" = 'web server 1.2 (prod)' ]
+  sanitize_text $'caf\xc3\xa9 \xe2\x80\x94 ok' # e-acute, an em dash
+  [ "$REPLY" = $'caf\xc3\xa9 \xe2\x80\x94 ok' ]
+  sanitize_text ''
+  [ -z "$REPLY" ]
+}

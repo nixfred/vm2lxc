@@ -27,7 +27,11 @@ scan_sizing_phrase() {
 }
 
 scan_one() {
-  local vmid=$1 name=${2//[[:cntrl:]]/?} state=${3//[[:cntrl:]]/?} template=$4 # names come from the node's VM list
+  local vmid=$1 name state template=$4 # names come from the node's VM list
+  sanitize_text "$2"
+  name=$REPLY
+  sanitize_text "$3"
+  state=$REPLY
   local rank saved=0 ram="-" saved_txt="-" disk="?" why total cur
   findings_reset
   if ! vm_context_load "$vmid"; then

@@ -201,3 +201,13 @@ plan_disks() {
   pve_volume_path() { printf '%s\n' "${FAKE_PATHS[$1]}"; }
   snap_plan_build "$vmid" "$run"
 }
+
+# Run a command that must FAIL. A bare `! cmd` in the middle of a test asserts nothing: errexit
+# does not fire for a negated command. (A reviewer found eight of those in this suite.)
+must_fail() {
+  if "$@"; then
+    echo "expected this to fail, but it succeeded: $*"
+    return 1
+  fi
+  return 0
+}

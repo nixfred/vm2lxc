@@ -18,6 +18,10 @@ SNAP="vm2lxc-$RUN"
 
 setup() {
   setup_fake_host
+  # In-process unit tests of the executor: the fake tools on PATH and a run root outside /run/vm2lxc
+  # are only accepted behind this switch. (The CLI suites opt in per command instead, so that their
+  # refusal tests really run without it.)
+  export VM2LXC_TEST_EXEC=1
 }
 
 # a one-disk ZFS VM with a partitioned guest (root ext4 + EFI vfat), planned and journalled
@@ -148,12 +152,13 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
 }
 
 @test "allowlist mount: a loop device is acceptable only after we registered it as ours" {
-  local ok="$VM2LXC_RUN_ROOT/$RUN/scsi0/x"
-  refused mount -o ro,noload -t ext4 /dev/loop5p1 "$ok"
+  local ok="$VM2LXC_RUN_ROOT/$RUN/scsi0/x" o
+  o=$(mount_opts_for ext4)
+  refused mount -o "$o" -t ext4 /dev/loop5p1 "$ok"
   OURS_LOOPS=(/dev/loop5)
-  run hc_mount -o ro,noload -t ext4 /dev/loop5p1 "$ok"
+  run hc_mount -o "$o" -t ext4 /dev/loop5p1 "$ok"
   [ "$status" -eq 0 ]
-  run hc_mount -o ro,noload -t ext4 /dev/loop55p1 "$ok"
+  run hc_mount -o "$o" -t ext4 /dev/loop55p1 "$ok"
   [ "$status" -eq 77 ]
 }
 
@@ -188,11 +193,11 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   mkdir -p "$VM2LXC_STATE_DIR"
   lock_acquire
   seed_zvol "$Z1"
-  host_cmd zfs list -H -o name "$Z1" >/dev/null
+  host_cmd zfs list -H -o name -t volume "$Z1" >/dev/null
   host_cmd udevadm settle --timeout=1
   [ ! -e "$FAKE_STATE/leaks.log" ] || { cat "$FAKE_STATE/leaks.log"; return 1; }
   # and the check itself works: a child started WITHOUT the guard does see the lock fd
-  zfs list -H -o name "$Z1" >/dev/null
+  zfs list -H -o name -t volume "$Z1" >/dev/null
   [ -e "$FAKE_STATE/leaks.log" ]
 }
 
@@ -265,7 +270,7 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   # order: unmount, then the clone, then the snapshot
   [ "$(fake_events)" = "$(printf 'UMOUNTED %s\nDESTROYED %s\nDESTROYED %s' "$VM2LXC_RUN_ROOT/$RUN/scsi0/vm2lxc-100-rtest01-scsi0-part1" "$C0" "$Z1@$SNAP")" ]
   # the source was never destroyed and no destroy ever carried a flag
-  ! grep -qx "DESTROYED $Z1" "$FAKE_STATE/events.log"
+  must_fail grep -qx "DESTROYED $Z1" "$FAKE_STATE/events.log"
   if fake_calls zfs | grep -E '^zfs destroy -'; then return 1; fi
 }
 
@@ -345,7 +350,7 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   run_apply || rc=$?
   [ "$rc" -ne 0 ]
   zfs_has "$C0"
-  ! zfs_has "$C1"
+  must_fail zfs_has "$C1"
   unset FAKE_FAIL
   run_teardown "$RUN"
   assert_nothing_left
@@ -451,10 +456,10 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   run_apply 2>"$BATS_TEST_TMPDIR/err" || rc=$?
   [ "$rc" -eq 77 ]
   grep -q "will not be adopted" "$BATS_TEST_TMPDIR/err"
-  ! zfs_has "$C0"
+  must_fail zfs_has "$C0"
   run_teardown "$RUN"
   zfs_has "$Z1@$SNAP"
-  ! grep -q "^DESTROYED" "$FAKE_STATE/events.log" 2>/dev/null
+  must_fail grep -q "^DESTROYED" "$FAKE_STATE/events.log" 2>/dev/null
 }
 
 @test "rail R9: a pre-existing clone dataset of the same name is not adopted either" {
@@ -476,7 +481,7 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   run_teardown "$RUN"
   zfs_has "$Z1@vm2lxc-otherrun"
   zfs_has rpool/data/vm2lxc-100-otherrun-scsi0
-  ! zfs_has "$C0"
+  must_fail zfs_has "$C0"
 }
 
 # --- LVM-thin lifecycle ----------------------------------------------------------------------------
@@ -508,7 +513,7 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   ev=$(fake_events | cut -d' ' -f1 | uniq | tr '\n' ' ')
   [[ $ev == "UMOUNTED LVREMOVED " ]]
   [ "$(fake_calls losetup | grep -c '^losetup -d')" -eq 2 ]
-  ! grep -q "LVREMOVED pve/vm-101-disk" "$FAKE_STATE/events.log"
+  must_fail grep -q "LVREMOVED pve/vm-101-disk" "$FAKE_STATE/events.log"
   if fake_calls lvremove | grep -v '^lvremove -y '; then return 1; fi
 }
 
@@ -519,7 +524,7 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   run_apply || rc=$?
   [ "$rc" -ne 0 ]
   lv_has "$L0"
-  ! lv_has "$L1"
+  must_fail lv_has "$L1"
   unset FAKE_FAIL
   run_teardown "$RUN"
   assert_nothing_left
@@ -600,7 +605,7 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   [ "$rc" -eq 77 ]
   run_teardown "$RUN"
   lv_has "$L0"
-  ! grep -q "^LVREMOVED" "$FAKE_STATE/events.log" 2>/dev/null
+  must_fail grep -q "^LVREMOVED" "$FAKE_STATE/events.log" 2>/dev/null
 }
 
 @test "rail R9 (lvm): a loop device already attached to our snapshot device is not ours to detach" {
@@ -728,4 +733,216 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
     esac
   done
   [ "${PLAN_SOURCES[0]}" = "$Z1" ]
+}
+
+# --- findings of the independent box review (2026-11-17): F1-F10 ---------------------------------
+# Each test below failed against the code as it was when the reviewer read it.
+
+@test "F1: a journal write that fails is reported, and the action it was meant to record is NOT performed" {
+  seed_zvol "$Z1"
+  plan_disks 100 "$RUN" zfspool "scsi0:/dev/zvol/$Z1:rootfs"
+  journal_new 100 "$RUN"
+  JOURNAL=/dev/full # every write to it fails with ENOSPC
+  run run_apply
+  [ "$status" -ne 0 ]
+  [[ $output == *"cannot be written"* ]]
+  must_fail zfs_has "$Z1@$SNAP"
+  must_fail grep -q '^zfs snapshot' "$FAKE_STATE/calls.log"
+}
+
+@test "F1: journal_step also reports a journal that cannot be OPENED (distinct from a failed write)" {
+  journal_new 100 "$RUN"
+  JOURNAL="$BATS_TEST_TMPDIR/no/such/dir/journal"
+  run journal_step zfs-clone a b
+  [ "$status" -eq 1 ]
+  [ ! -e "$JOURNAL" ]
+}
+
+@test "F1: journal_mark and journal_close report a failed write instead of pretending" {
+  journal_new 100 "$RUN"
+  JOURNAL=/dev/full
+  run journal_mark 1 DONE
+  [ "$status" -eq 1 ]
+  run journal_close
+  [ "$status" -eq 1 ]
+}
+
+@test "F1: if the journal cannot be updated during teardown the run stays OPEN and the failure is reported; a repeat finishes it" {
+  if [ "$(id -u)" -eq 0 ]; then skip "root ignores file modes"; fi
+  zfs_one
+  run_apply
+  chmod 444 "$JOURNAL"
+  run run_teardown "$RUN"
+  [ "$status" -ne 0 ]
+  [[ $output == *"could not be updated"* ]]
+  must_fail grep -q '^CLOSED$' "$JOURNAL"
+  chmod 644 "$JOURNAL"
+  run run_teardown "$RUN"
+  [ "$status" -eq 0 ]
+  grep -q '^CLOSED$' "$JOURNAL"
+  assert_nothing_left
+}
+
+@test "F1: if even one UNDONE mark is lost the run is not closed, although journal_close itself would work" {
+  zfs_one
+  run_apply
+  journal_mark() { # a flaky disk: every UNDONE mark fails, everything else works
+    if [[ $2 == UNDONE ]]; then return 1; fi
+    printf 'ST\t%d\t%s\n' "$1" "$2" >>"$JOURNAL"
+  }
+  run run_teardown "$RUN"
+  [ "$status" -ne 0 ]
+  [[ $output == *"could not be updated"* ]]
+  must_fail grep -q '^CLOSED$' "$JOURNAL"
+  assert_nothing_left # the objects themselves WERE removed; only the paperwork is incomplete
+}
+
+@test "F2: a failed mountpoint probe is an error, never 'not mounted'" {
+  local mnt="$VM2LXC_RUN_ROOT/$RUN/scsi0/x"
+  mkdir -p "$mnt"
+  FAKE_FAIL=mountpoint:1:124 run act_undo_mount "$CD0-part1" "$mnt" ext4 # a timeout
+  [ "$status" -eq 124 ]
+  [ -d "$mnt" ]
+  FAKE_FAIL=mountpoint:2:32 run act_undo_mount "$CD0-part1" "$mnt" ext4 # exists but cannot be examined
+  [ "$status" -eq 32 ]
+  [ -d "$mnt" ]
+  rmdir "$mnt"
+  run act_undo_mount "$CD0-part1" "$mnt" ext4 # gone: 32 from mountpoint is then simply "nothing there"
+  [ "$status" -eq 0 ]
+}
+
+@test "F2: a failed 'losetup -j' probe stops the teardown with the loop device still attached; a repeat finishes" {
+  lvm_two
+  run_apply
+  # apply already made two `losetup -j` calls (the 'nothing attached yet' check), so the teardown's first probe is call 3
+  FAKE_FAIL=losetup.list:3:5 run run_teardown "$RUN"
+  [ "$status" -ne 0 ]
+  [[ $output == *"could not undo"* ]]
+  [ "$(fake_loops)" -gt 0 ]
+  run run_teardown "$RUN"
+  [ "$status" -eq 0 ]
+  assert_nothing_left
+}
+
+@test "F2: zfs_exists says 'absent' ONLY for 'does not exist'; any other zfs failure is an error" {
+  seed_zvol "$Z1"
+  run zfs_exists "$Z1"
+  [ "$status" -eq 0 ]
+  run zfs_exists rpool/data/nope
+  [ "$status" -eq 1 ]
+  FAKE_FAIL=zfs.list:3:1 run zfs_exists "$Z1" # exit 1 without 'does not exist' (a suspended pool does this)
+  [ "$status" -eq 3 ]
+  FAKE_FAIL=zfs.list:4:9 run zfs_exists "$Z1"
+  [ "$status" -eq 9 ]
+}
+
+@test "F3: a zvol is mounted through the KERNEL names lsblk prints (/dev/zdN, /dev/zdNpM), and only ours" {
+  dev_realpath() { if [[ $1 == "$CD0" ]]; then printf '/dev/zd16'; else printf '%s' "$1"; fi; }
+  export FAKE_ZD_MAP="$C0=/dev/zd16"
+  zfs_one
+  fake_rootfs_suffix "p1" # the root partition is /dev/zd16p1 now
+  run_apply
+  [ "${#MOUNTS[@]}" -eq 1 ]
+  fake_mounts | grep -q '/dev/zd16p1'
+  pick_guest_root
+  [[ $GUEST_ROOT == "$VM2LXC_RUN_ROOT/$RUN/scsi0/zd16p1" ]]
+  local o ok="$VM2LXC_RUN_ROOT/$RUN/scsi0/x"
+  o=$(mount_opts_for ext4)
+  run hc_mount -o "$o" -t ext4 /dev/zd16p1 "$ok" # registered when the device became ready
+  [ "$status" -eq 0 ]
+  run hc_mount -o "$o" -t ext4 /dev/zd99p1 "$ok" # a zd device we did not create
+  [ "$status" -eq 77 ]
+  OURS_ZDS=()
+  run hc_mount -o "$o" -t ext4 /dev/zd16p1 "$ok" # and not ours any more once unregistered
+  [ "$status" -eq 77 ]
+  run_teardown "$RUN"
+  assert_nothing_left
+}
+
+@test "F3: a guest LVM volume or RAID array that udev activated is skipped and reported, and the run goes on" {
+  seed_zvol "$Z1"
+  plan_disks 100 "$RUN" zfspool "scsi0:/dev/zvol/$Z1:rootfs"
+  seed_lsblk_dev "$CD0" "$CD0" "$CD0-part1 ext4" "$CD0-part2 LVM2_member" "/dev/mapper/guest-root ext4 lvm" "/dev/md127 ext4 raid1"
+  fake_rootfs_suffix "-part1"
+  journal_new 100 "$RUN"
+  run_apply
+  [ "${#MOUNTS[@]}" -eq 1 ]
+  printf '%s\n' "${SKIPPED[@]}" | grep -q 'guest-root.*nested lvm'
+  printf '%s\n' "${SKIPPED[@]}" | grep -q 'md127.*nested raid1'
+  [[ ${MOUNT_NOTES[*]} == *"activated"* ]]
+  run_teardown "$RUN"
+  assert_nothing_left
+}
+
+@test "F6: a crafted journal cannot run commands: sequence numbers, kinds and states are validated before use" {
+  journal_new 100 "$RUN"
+  local pw="$BATS_TEST_TMPDIR/PWNED"
+  printf 'STEP\t1[$(touch %s)]\tzfs-clone\ta\tb\nST\tx[$(touch %s)]\tDONE\nST\t1\t$(touch %s)\nSTEP\t2\t$(touch %s)\n' \
+    "$pw" "$pw" "$pw" "$pw" >>"$JOURNAL"
+  run journal_load "$RUN"
+  [ "$status" -eq 0 ]
+  [ ! -e "$pw" ]
+  [[ $output == *"ignored 4 malformed line(s)"* ]]
+  # a run id that walks out of runs/ and lands on a journal that really exists and is readable
+  mkdir -p "$VM2LXC_STATE_DIR/elsewhere"
+  cp "$JOURNAL" "$VM2LXC_STATE_DIR/elsewhere/journal"
+  run journal_load '../elsewhere'
+  [ "$status" -eq 1 ]
+  run journal_load 'x y'
+  [ "$status" -eq 1 ]
+}
+
+@test "F7: journal_step refuses empty, tab and newline arguments and bad kinds (they would shift fields on reading)" {
+  journal_new 100 "$RUN"
+  run journal_step zfs-clone "" b
+  [ "$status" -eq 1 ]
+  run journal_step zfs-clone $'a\tb' c
+  [ "$status" -eq 1 ]
+  run journal_step zfs-clone $'a\nb' c
+  [ "$status" -eq 1 ]
+  run journal_step 'Bad Kind' a
+  [ "$status" -eq 1 ]
+  [ "$(grep -c '^STEP' "$JOURNAL")" -eq 0 ]
+  run journal_step zfs-clone "a b" c # a space is fine
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^STEP' "$JOURNAL")" -eq 1 ]
+}
+
+@test "F8: mount options must be EXACTLY the read-only set for the filesystem" {
+  local ok="$VM2LXC_RUN_ROOT/$RUN/scsi0/x" o
+  o=$(mount_opts_for ext4)
+  run hc_mount -o "$o" -t ext4 "$CD0-part1" "$ok"
+  [ "$status" -eq 0 ]
+  refused mount -o "$o,remount" -t ext4 "$CD0-part1" "$ok"
+  refused mount -o "$o,bind" -t ext4 "$CD0-part1" "$ok"
+  refused mount -o "ro,noload,nodev,nosuid" -t ext4 "$CD0-part1" "$ok"
+  refused mount -o "$(mount_opts_for xfs)" -t ext4 "$CD0-part1" "$ok"
+}
+
+@test "F8: a device path with '..' or a space is not one of our devices" {
+  local ok="$VM2LXC_RUN_ROOT/$RUN/scsi0/x" o
+  o=$(mount_opts_for ext4)
+  refused mount -o "$o" -t ext4 "/dev/zvol/../../tmp/x y/vm2lxc-1-abcd-k1" "$ok"
+  refused mount -o "$o" -t ext4 "/dev/zvol/pool/../x/vm2lxc-1-abcd-k1" "$ok"
+  refused mount -o "$o" -t ext4 "/dev/zvol/po ol/vm2lxc-1-abcd-k1" "$ok"
+}
+
+@test "F8: the ownership stamp is read with '-s local' (a value inherited from a parent is no proof)" {
+  refused zfs get -H -o value vm2lxc:run "$C0"
+  run host_cmd zfs get -H -o value -s local vm2lxc:run "$C0"
+  [ "$status" -ne 77 ]
+}
+
+@test "F8: without the test switch a tool must come from a system directory, whatever PATH says" {
+  VM2LXC_TEST_EXEC=0 run host_cmd zfs list -H -o name -t volume "$Z1"
+  [ "$status" -eq 77 ]
+  [[ $output == *"not a system directory"* ]]
+  [ ! -e "$FAKE_STATE/calls.log" ]
+}
+
+@test "F8: without the test switch the run root is always /run/vm2lxc, whatever the environment says" {
+  VM2LXC_TEST_EXEC=0 VM2LXC_RUN_ROOT=/var/lib/evil run run_root
+  [ "$output" = /run/vm2lxc ]
+  VM2LXC_TEST_EXEC=1 VM2LXC_RUN_ROOT=/tmp/x/y run run_root
+  [ "$output" = /tmp/x/y ]
 }

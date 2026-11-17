@@ -36,12 +36,15 @@ vm_run_state() { # vmid -> running|stopped|unknown
 INSPECT_OUT_FD=1 INSPECT_ERR_FD=2
 inspect_trap() {
   local rc=$?
-  trap - EXIT
   # A signal that arrives WHILE we are tearing down must not abort the teardown: that would
   # leave exactly the objects we are removing (found on the real host: SIGTERM at the end of a
-  # run killed the teardown halfway and left a snapshot LV). So ignore them from here on;
-  # SIGKILL still works, and `vm2lxc cleanup` recovers from the journal.
-  trap '' INT TERM HUP
+  # run killed the teardown halfway and left a snapshot LV). So ignore them, FIRST, before
+  # anything else: PIPE too (a reader that went away, as in `| head`) and QUIT. SIGKILL still
+  # works, and `vm2lxc cleanup` recovers from the journal.
+  trap '' INT TERM HUP PIPE QUIT
+  trap - EXIT
+  # A failed write to a dead pipe must not make this trap exit before the teardown is finished.
+  set +e
   if ((INSPECT_ARMED)); then
     INSPECT_ARMED=0
     {
@@ -55,6 +58,17 @@ inspect_trap() {
   exit "$rc"
 }
 
+# path_inside_root <root> <path>: rc 0 only if <path> exists AND, with every symlink resolved on the
+# HOST, it is still inside <root>. The guest is untrusted: an absolute symlink in it (/etc -> /etc)
+# points at the host, not at the guest. Every guest check must use this (or a chroot-style
+# resolver) before it reads anything under the guest root.
+path_inside_root() {
+  local r p
+  r=$(realpath -e -- "$1" 2>/dev/null) || return 1
+  p=$(realpath -e -- "$2" 2>/dev/null) || return 1
+  [[ $p == "$r" || $p == "$r"/* ]]
+}
+
 # Pick the guest's root filesystem among what was mounted from the boot disk.
 pick_guest_root() {
   local m key target dev mnt fs
@@ -62,12 +76,34 @@ pick_guest_root() {
   for m in "${MOUNTS[@]}"; do
     IFS='|' read -r key target dev mnt fs <<<"$m"
     [[ $target == rootfs ]] || continue
-    if [[ -d $mnt/etc && ( -d $mnt/usr || -d $mnt/bin ) ]]; then
+    if path_inside_root "$mnt" "$mnt/etc" && { path_inside_root "$mnt" "$mnt/usr" || path_inside_root "$mnt" "$mnt/bin"; }; then
       GUEST_ROOT=$mnt
       return 0
     fi
   done
   return 1
+}
+
+# The plan was built, and the VM's lock checked, BEFORE we took the run lock. A backup can start, or a
+# disk move, in between. Re-read everything after the lock and refuse if anything changed.
+inspect_revalidate() { # <vmid> <run>
+  local -a before=("${PLAN[@]}")
+  vm_context_load "$1" || {
+    printf 'vm2lxc: VM %s can no longer be read\n' "$1" >&2
+    return 1
+  }
+  if [[ -n $(qmc_get lock) ]]; then
+    printf 'vm2lxc: VM %s became locked (lock: %s) after the plan was made\n' "$1" "$(qmc_get lock)" >&2
+    return 1
+  fi
+  snap_plan_build "$1" "$2" || {
+    printf 'vm2lxc: the plan can no longer be built: %s\n' "$PLAN_ERR" >&2
+    return 1
+  }
+  if [[ "${before[*]}" != "${PLAN[*]}" ]]; then
+    printf 'vm2lxc: VM %s changed (its disks or paths) between the plan and the start of the run\n' "$1" >&2
+    return 1
+  fi
 }
 
 cmd_inspect() {
@@ -108,6 +144,7 @@ cmd_inspect() {
     die "$EXIT_REFUSED" "VM $vmid is locked (lock: $vm_lock): another operation is running on it, so vm2lxc will not snapshot its disks now. Retry when the lock is gone."
   fi
   lock_acquire || die "$EXIT_REFUSED" "another vm2lxc run holds the lock (no changes made)"
+  inspect_revalidate "$vmid" "$run" || die "$EXIT_REFUSED" "VM $vmid changed since the plan was shown: nothing was done, run it again"
   journal_new "$vmid" "$run" || die "$EXIT_ENV" "could not create the journal under $(state_dir)"
   exec {INSPECT_OUT_FD}>&1 {INSPECT_ERR_FD}>&2
   INSPECT_ARMED=1
@@ -115,6 +152,7 @@ cmd_inspect() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP # the ssh session dropping must still tear down
+  trap 'exit 141' PIPE # a reader that went away (`| head`) must still tear down
 
   printf '\nExecuting. Journal: %s\n' "$JOURNAL"
   run_apply || die "$?" "the plan failed part-way (everything created so far is being torn down)"

@@ -95,7 +95,7 @@ CLOSED</pre>
 <tr><td>R4</td><td>Never a recursive or forced flag: no <code>-r</code>, <code>-R</code>, <code>-f</code>, no <code>umount -l</code>. A snapshot with dependents therefore fails safe instead of taking children with it.</td><td><code>host_cmd</code> allowlist</td></tr>
 <tr><td>R5</td><td>A target equal to a source dataset/LV is refused outright.</td><td>planner and <code>host_cmd</code></td></tr>
 <tr><td>R6</td><td>Every mutating command passes one function, <code>host_cmd</code>, an allowlist of exact argument shapes. Anything else dies. It lives only in <code>lib/hostexec.sh</code>.</td><td>allowlist + static test</td></tr>
-<tr><td>R7</td><td>Mounts are read-only only (<code>ro</code> must be in the options), only for filesystems in the table above, and only on devices under our own clone path.</td><td><code>host_cmd mount</code></td></tr>
+<tr><td>R7</td><td>Mounts are read-only only: the option string must be <b>exactly</b> the read-only set chosen for that filesystem (no <code>remount</code>, <code>bind</code>, <code>loop</code> or extras), only for filesystems in the table above, and only on devices that are ours: our clone or snapshot path, a loop device we attached, or the kernel name (<code>/dev/zdN</code>) of a zvol clone we created.</td><td><code>host_cmd mount</code></td></tr>
 <tr><td>R8</td><td><code>inspect</code> executes nothing without <code>--yes</code>, and refuses to execute at all in fixture mode and when not root on a PVE node.</td><td>command code + tests</td></tr>
 <tr><td>R9</td><td>A pre-existing object with the name we are about to create is a refusal, never adopted. The step is journalled <code>FOREIGN</code>, so teardown can never destroy it later, even if its stamp happens to match.</td><td>apply handlers, teardown</td></tr>
 <tr><td>R10</td><td>Teardown <b>stops at the first failed undo</b>. A mount sits on a loop device or clone, which sits on a snapshot: destroying those while the mount is still there would be wrong. The journal stays open and the next <code>cleanup</code> continues.</td><td><code>run_teardown</code></td></tr>
@@ -104,6 +104,12 @@ CLOSED</pre>
 <tr><td>R13</td><td>Names never start with <code>-</code> or <code>.</code>: a VG, LV or storage ID like <code>-x</code> would reach an LVM or <code>pvesm</code> command line as an <i>option</i>.</td><td>name patterns</td></tr>
 <tr><td>R15</td><td>A VM with a <code>lock</code> (backup, rollback, migrate, clone, snapshot-delete, ...) is not snapshotted: something is working on its disks. The plan says so and <code>--yes</code> refuses (exit 77) before creating anything. Backup jobs locked the test VMs on the real host.</td><td><code>cmd_inspect</code></td></tr>
 <tr><td>R14</td><td>SIGINT, SIGTERM and SIGHUP are <b>ignored while tearing down</b>. A signal during teardown must never leave half of what it was removing. SIGKILL still works, and <code>cleanup</code> recovers from the journal.</td><td><code>inspect_trap</code></td></tr>
+<tr><td>R16</td><td><b>The journal is honest.</b> A step that cannot be recorded is not performed (a failed write or an unopenable journal stops the run before the action). A teardown that cannot update the journal reports failure and leaves the run open instead of closing it. Journal arguments that are empty or contain a tab or newline are refused, because they would shift fields on reading. The directories are fsynced.</td><td><code>journal_step</code>, <code>journal_mark</code>, <code>journal_close</code></td></tr>
+<tr><td>R17</td><td><b>"Could not tell" is never "absent".</b> An undo probe treats only the exact answer as gone (<code>mountpoint</code> says not a mountpoint, <code>zfs</code> says "does not exist", the LV is missing). A timeout, a refusal, an I/O error or an unreadable path is an error: the step is not marked undone and teardown stops (R10).</td><td>undo handlers, <code>zfs_exists</code></td></tr>
+<tr><td>R18</td><td><b>Nothing the guest or a file controls reaches an interpreter or the host.</b> Journal fields are validated before they are used as array subscripts (a crafted sequence number would otherwise execute code). A guest path is resolved on the host and must stay inside the guest root (an absolute symlink <code>/etc -&gt; /etc</code> points at the host). Terminal text is stripped of ASCII controls, UTF-8 C1 controls and bidi overrides in any locale.</td><td><code>journal_load</code>, <code>path_inside_root</code>, <code>sanitize_text</code></td></tr>
+<tr><td>R19</td><td><b>Trust anchors are fixed.</b> Outside the test seam every tool must resolve to a system directory (a hostile <code>PATH</code> cannot substitute its own <code>zfs</code> or <code>mount</code>), and the run root is always <code>/run/vm2lxc</code> (an environment variable cannot point our mounts elsewhere). The ownership stamp is read with <code>-s local</code>: a value inherited from a parent dataset is not proof. Device names containing <code>..</code> or spaces are never ours.</td><td><code>host_cmd</code>, <code>run_root</code>, <code>hc_mount</code></td></tr>
+<tr><td>R20</td><td><b>The VM is read again after the run lock is taken.</b> A backup can start, or a disk move, between the plan being shown and the lock being acquired. The config, the lock and the plan are rebuilt and compared; any difference refuses the run (exit 77) with nothing created.</td><td><code>inspect_revalidate</code></td></tr>
+<tr><td>R21</td><td><b>Only our own devices are mounted.</b> <code>lsblk</code> also lists children: a guest LVM volume group or md array that udev activated on one of our partitions shows up as a device. Only <code>loop</code>, <code>part</code> and <code>disk</code> rows are mounted; the others are skipped and reported, and the run goes on.</td><td><code>act_do_mount_disk</code></td></tr>
 </table>
 
 <h2>7. Failure matrix (each is a test against the stateful fake)</h2>
@@ -123,6 +129,13 @@ CLOSED</pre>
 <tr><td>another signal while the teardown is running</td><td>ignored, the teardown completes (R14)</td></tr>
 <tr><td>SIGKILL at any point</td><td>nothing can run; the journal says what may exist; <code>cleanup --yes</code> removes it</td></tr>
 <tr><td>a storage command hangs</td><td>cut off by the per-command timeout (R12); the run fails and tears down</td></tr>
+<tr><td>the journal cannot be written or opened</td><td>the step is not performed, the run stops and tears down (R16)</td></tr>
+<tr><td>the journal cannot be updated during teardown</td><td>objects are still removed, the run stays open and reports it; a repeat <code>cleanup</code> closes it (R16)</td></tr>
+<tr><td>a probe fails (<code>mountpoint</code> times out, <code>losetup -j</code> errors, <code>zfs list</code> says something other than "does not exist")</td><td>treated as an error, not as "gone": the step stays pending and teardown stops (R17)</td></tr>
+<tr><td>the reader of our output goes away (<code>| head</code>, a closed terminal)</td><td>the run tears down; the trap ignores SIGPIPE so its own messages cannot kill it</td></tr>
+<tr><td>a guest LVM or RAID volume was auto-activated on one of our partitions</td><td>skipped and reported, never mounted; the run continues</td></tr>
+<tr><td>a guest <code>/etc</code> or <code>/usr</code> is a symlink to the host</td><td>not accepted as a guest root (R18)</td></tr>
+<tr><td>a VM becomes locked, or its disks change, after the plan was shown</td><td>refused with nothing created (R20)</td></tr>
 <tr><td>a signal lands inside <code>cmd >/dev/null 2>&amp;1</code></td><td>the trap writes to saved descriptors, so its messages are not swallowed</td></tr>
 </table>
 
@@ -144,6 +157,7 @@ CLOSED</pre>
 <li>XFS and btrfs guests have not been mounted for real (ext4 has).</li>
 <li>PVE 8.x has not been run (only 9.2.28).</li>
 <li>A guest with LUKS, LVM or mdraid inside is reported as skipped, but was only tested against the fake.</li>
+<li><b>Kernel names for zvols.</b> The real <code>lsblk -p</code> prints <code>/dev/zdN</code> and <code>/dev/zdNpM</code>, not <code>/dev/zvol/...</code>. The code now resolves the clone with <code>readlink -f</code> and accepts only the zd device it created, but this path has only run against the fake (the independent review found that the first version would have refused every ZFS mount).</li>
 </ul>
 
 <h2>10. Open questions</h2>
@@ -154,7 +168,7 @@ CLOSED</pre>
 </ol>
 
 <script type="application/json" id="state">
-{"doc":"snapshot-layer","version":2,"date":"2026-11-17","status":"lvmthin verified on PVE 9.2.28; zfs fake only","real_verified_storage":["lvmthin"],"fake_only_storage":["zfspool"],"rails":["R1","R2","R3","R4","R5","R6","R7","R8","R9","R10","R11","R12","R13","R14","R15"],"real_host_vms":4,"real_host_crash_injections":61,"checksum_proof":"identical"}
+{"doc":"snapshot-layer","version":3,"date":"2026-11-17","status":"lvmthin verified on PVE 9.2.28; zfs fake only","real_verified_storage":["lvmthin"],"fake_only_storage":["zfspool"],"rails":["R1","R2","R3","R4","R5","R6","R7","R8","R9","R10","R11","R12","R13","R14","R15","R16","R17","R18","R19","R20","R21"],"independent_review":{"reviewer":"fresh-context box job","findings":12,"fixed":12},"tests":283,"real_host_vms":4,"real_host_crash_injections":61,"checksum_proof":"identical"}
 </script>
 </main>
 </body>

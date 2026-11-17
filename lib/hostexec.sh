@@ -10,7 +10,15 @@
 # Nothing in preflight or scan calls into this file (tests/readonly_guard.bats proves it).
 
 state_dir() { printf '%s' "${VM2LXC_STATE_DIR:-/var/lib/vm2lxc}"; }
-run_root() { printf '%s' "${VM2LXC_RUN_ROOT:-/run/vm2lxc}"; }
+# The run root is where we mkdir and mount. Outside the test seam (VM2LXC_TEST_EXEC=1) it is ALWAYS
+# /run/vm2lxc: an environment variable must not be able to point our mounts at /var/lib or /etc.
+run_root() {
+  if [[ ${VM2LXC_TEST_EXEC:-} == 1 ]]; then
+    printf '%s' "${VM2LXC_RUN_ROOT:-/run/vm2lxc}"
+  else
+    printf '%s' /run/vm2lxc
+  fi
+}
 
 # A refusal prints and RETURNS 77. Callers propagate it (`|| return $?`) so that it is not
 # lost inside a command substitution the way an `exit` would be.
@@ -24,7 +32,8 @@ _ZN='[A-Za-z0-9_][A-Za-z0-9_.:-]*'
 RE_Z_SNAP="^(${_ZN}(/${_ZN})+)@vm2lxc-([a-z][a-z0-9]{3,30})\$"                  # 3 = run
 RE_Z_CLONE="^${_ZN}(/${_ZN})*/vm2lxc-[0-9]+-([a-z][a-z0-9]{3,30})-[a-z]+[0-9]+\$" # 2 = run
 RE_Z_ANY='^[A-Za-z0-9_./:@-]+$'
-RE_DEV_OURS='^/dev/zvol/.+/vm2lxc-[0-9]+-[a-z][a-z0-9]{3,30}-[a-z]+[0-9]+(-part[0-9]+)?$'
+RE_DEV_OURS='^/dev/zvol/[A-Za-z0-9_./:-]+/vm2lxc-[0-9]+-[a-z][a-z0-9]{3,30}-[a-z]+[0-9]+(-part[0-9]+)?$'
+RE_ZD='^(/dev/zd[0-9]+)(p[0-9]+)?$'
 
 RE_LV_SNAP='^([A-Za-z0-9_+][A-Za-z0-9_+.-]*)/vm2lxc-([0-9]+)-([a-z][a-z0-9]{3,30})-([a-z]+[0-9]+)$' # 1 vg 2 vmid 3 run 4 key
 RE_LV_NAME='^vm2lxc-[0-9]+-([a-z][a-z0-9]{3,30})-[a-z]+[0-9]+$'                            # 1 run
@@ -34,7 +43,20 @@ RE_LOOP='^(/dev/loop[0-9]+)(p[0-9]+)?$'
 
 # Loop devices this process attached, or found via `losetup -j <our snapshot device>`.
 OURS_LOOPS=()
+OURS_ZDS=() # kernel names (/dev/zdN) of the zvol clones we made: the real lsblk prints those, not /dev/zvol/...
 declare -gA LOOP_DEV=()
+
+zd_is_ours() { # /dev/zdN or /dev/zdNpM
+  local z
+  [[ $1 =~ $RE_ZD ]] || return 1
+  for z in "${OURS_ZDS[@]}"; do
+    [[ $z == "${BASH_REMATCH[1]}" ]] && return 0
+  done
+  return 1
+}
+
+# readlink -f, with the input echoed back when it cannot be resolved (and overridable in tests).
+dev_realpath() { readlink -f -- "$1" 2>/dev/null || printf '%s' "$1"; }
 
 loop_is_ours() { # /dev/loopN or /dev/loopNpM
   local base l
@@ -96,18 +118,24 @@ hc_zfs() {
         return
       fi
       ;;
-    list)
-      [[ $# -eq 5 && $2 == -H && $3 == -o && $4 == name && $5 =~ $RE_Z_ANY && $5 != -* ]] || {
+    list) # list -H -o name -t <snapshot|volume> <name>
+      [[ $# -eq 7 && $2 == -H && $3 == -o && $4 == name && $5 == -t && ($6 == snapshot || $6 == volume) &&
+        $7 =~ $RE_Z_ANY && $7 != -* ]] || {
         refuse "zfs list: unexpected arguments"
         return
       }
       ;;
     get)
-      [[ $# -eq 6 && $2 == -H && $3 == -o && $4 == value && ($5 == vm2lxc:run || $5 == origin) &&
-        $6 =~ $RE_Z_ANY && $6 != -* ]] || {
+      # the stamp must be set LOCALLY: a value inherited from a parent dataset is not proof of ownership
+      if [[ $# -eq 8 && $2 == -H && $3 == -o && $4 == value && $5 == -s && $6 == local && $7 == vm2lxc:run &&
+        $8 =~ $RE_Z_ANY && $8 != -* ]]; then
+        :
+      elif [[ $# -eq 6 && $2 == -H && $3 == -o && $4 == value && $5 == origin && $6 =~ $RE_Z_ANY && $6 != -* ]]; then
+        :
+      else
         refuse "zfs get: unexpected arguments"
         return
-      }
+      fi
       ;;
     *)
       refuse "zfs ${verb:-<none>}: not on the allowlist"
@@ -118,34 +146,27 @@ hc_zfs() {
 }
 
 hc_mount() {
-  local opts fs dev mnt tok has_ro=0
+  local opts fs dev mnt
   [[ $# -eq 6 && $1 == -o && $3 == -t ]] || {
     refuse "mount: unexpected arguments"
     return
   }
   opts=$2 fs=$4 dev=$5 mnt=$6
-  local -a toks
-  IFS=, read -ra toks <<<"$opts"
-  for tok in "${toks[@]}"; do
-    [[ $tok == ro ]] && has_ro=1
-    [[ $tok == rw ]] && {
-      refuse "mount: rw is never allowed"
-      return
-    }
-  done
-  ((has_ro)) || {
-    refuse "mount: options '$opts' do not include ro"
-    return
-  }
   case $fs in ext2 | ext3 | ext4 | xfs | btrfs) ;; *)
     refuse "mount: filesystem '$fs' is not on the allowlist"
     return
     ;;
   esac
-  [[ $dev =~ $RE_DEV_OURS ]] || loop_is_ours "$dev" || {
-    refuse "mount: '$dev' is not one of our clone or loop devices"
+  # The options must be EXACTLY the read-only set we chose for this filesystem. "Contains ro and
+  # not rw" would let remount, bind, loop or X-mount.* options through.
+  [[ $opts == "$(mount_opts_for "$fs")" ]] || {
+    refuse "mount: options '$opts' are not the exact read-only set for $fs"
     return
   }
+  if [[ $dev == *..* ]] || ! { [[ $dev =~ $RE_DEV_OURS ]] || loop_is_ours "$dev" || zd_is_ours "$dev"; }; then
+    refuse "mount: '$dev' is not one of our clone, zvol or loop devices"
+    return
+  fi
   hc_under_runroot "$mnt" || {
     refuse "mount: '$mnt' is not under $(run_root)"
     return
@@ -210,7 +231,7 @@ hc_losetup() {
 }
 
 host_cmd() {
-  local bin=${1:-}
+  local bin=${1:-} b p
   shift || true
   case $bin in
     zfs) hc_zfs "$@" ;;
@@ -230,14 +251,26 @@ host_cmd() {
       [[ $# -eq 1 ]] && { hc_under_runroot "$1" || { [[ $1 == "$(run_root)" ]] && hc_under_runroot "$1/x"; }; } ||
         refuse "rmdir: only one path under $(run_root)"
       ;;
-    lsblk)
-      [[ $# -eq 3 && $1 == -nrpo && $2 == NAME,FSTYPE && $3 == /dev/* && $3 != *..* ]] || refuse "lsblk: unexpected arguments"
+    lsblk) # lsblk -P -n -p -o NAME,FSTYPE,TYPE <dev>: -P prints KEY="value" pairs, so empty fields cannot shift columns
+      [[ $# -eq 6 && $1 == -P && $2 == -n && $3 == -p && $4 == -o && $5 == NAME,FSTYPE,TYPE && $6 == /dev/* && $6 != *..* ]] ||
+        refuse "lsblk: unexpected arguments"
       ;;
     udevadm)
       [[ $# -eq 2 && $1 == settle && $2 =~ ^--timeout=[0-9]+$ ]] || refuse "udevadm: only 'settle --timeout=N'"
       ;;
     *) refuse "$bin: not on the allowlist" ;;
   esac || return $?
+  # The tools must come from a system directory. Outside the test seam a hostile PATH must not be
+  # able to substitute its own zfs, lvremove or mount.
+  if [[ ${VM2LXC_TEST_EXEC:-} != 1 ]]; then
+    for b in timeout "$bin"; do
+      p=$(command -v -- "$b" 2>/dev/null) || p=""
+      [[ $p =~ ^/(usr/)?s?bin/[^/]+$ ]] || {
+        refuse "$b resolves to '${p:-nothing}', not a system directory: PATH is not trusted"
+        return
+      }
+    done
+  fi
   # Children must not inherit our lock fd or the saved stdout/stderr (found on the first real
   # run: LVM warns about every leaked descriptor, and a long-lived child holding the lock fd
   # would keep the lock after we exit). So close them, in a subshell, before the exec.
@@ -256,11 +289,25 @@ host_cmd() {
   ) </dev/null
 }
 
-# zfs_exists <name>: rc 0 exists, 1 absent, anything else is an error to propagate.
+# zfs_exists <name>: rc 0 exists, 1 ABSENT, 3 or more = an error to propagate.
+# Only the message "does not exist" counts as absent: real `zfs list` also exits 1 for a suspended
+# pool or a module problem, and treating that as "gone" would mark a live object UNDONE.
 zfs_exists() {
-  local rc=0
-  host_cmd zfs list -H -o name "$1" >/dev/null 2>&1 || rc=$?
-  return "$rc"
+  local t=volume out rc=0
+  [[ $1 == *@* ]] && t=snapshot
+  out=$(host_cmd zfs list -H -o name -t "$t" "$1" 2>&1) || rc=$?
+  case $rc in
+    0) return 0 ;;
+    1)
+      if [[ $out == *"does not exist"* ]]; then return 1; fi
+      printf '%s\n' "$out" >&2
+      return 3
+      ;;
+    *)
+      printf '%s\n' "$out" >&2
+      return "$rc"
+      ;;
+  esac
 }
 
 # --- journal ---------------------------------------------------------------------------------
@@ -268,6 +315,10 @@ JOURNAL="" J_SEQ=0 LAST_SEQ=0 RUN_ID="" RUN_VMID=""
 JL_N=0 JL_CLOSED=0
 STEP_FOREIGN=0 # set by a handler that refused because the object ALREADY existed (R9)
 JL_KIND=() JL_ARGS=() JL_STATE=()
+
+journal_unwritable() {
+  printf 'vm2lxc: the journal %s cannot be written: refusing to continue with a step that would not be recorded\n' "${JOURNAL:-?}" >&2
+}
 
 journal_new() { # <vmid> <run>
   local d
@@ -279,38 +330,53 @@ journal_new() { # <vmid> <run>
     return
   fi
   (umask 077 && printf '# vm2lxc journal v1\nRUN\t%s\t%s\t%s\n' "$2" "$1" "$(date +%s)" >"$JOURNAL") || return 1
+  # fsync the file AND its directories: a power cut must not lose the journal of a snapshot that survives
+  sync "$JOURNAL" "$d" "$(state_dir)/runs" 2>/dev/null || true
   J_SEQ=0
   RUN_ID=$2
   RUN_VMID=$1
 }
 
-# journal_step <kind> [args...]: write-ahead. The new sequence number is in LAST_SEQ.
+# journal_step <kind> [args...]: write-ahead. rc 1 if the step could NOT be recorded; the caller must
+# then not perform it. The new sequence number is in LAST_SEQ. An argument that is empty or contains a
+# tab or newline would shift fields on reading (tab is IFS whitespace), so it is refused up front.
 journal_step() {
-  local kind=$1
+  local kind=$1 a
   shift
+  [[ $kind =~ ^[a-z][a-z-]*$ ]] || return 1
+  for a in "$@"; do
+    [[ -n $a && $a != *[$'\t\n\r']* ]] || {
+      printf 'vm2lxc: journal: refusing an empty or tab/newline argument for step %s\n' "$kind" >&2
+      return 1
+    }
+  done
   J_SEQ=$((J_SEQ + 1))
   LAST_SEQ=$J_SEQ
   {
-    printf 'STEP\t%d\t%s' "$J_SEQ" "$kind"
-    if (($# > 0)); then printf '\t%s' "$@"; fi
-    printf '\nST\t%d\tPENDING\n' "$J_SEQ"
-  } >>"$JOURNAL"
+    printf 'STEP\t%d\t%s' "$J_SEQ" "$kind" || return 1
+    if (($# > 0)); then printf '\t%s' "$@" || return 1; fi
+    printf '\nST\t%d\tPENDING\n' "$J_SEQ" || return 1
+  } >>"$JOURNAL" || return 1
   sync "$JOURNAL" 2>/dev/null || true
 }
 
-journal_mark() { # <seq> <PENDING|DONE|UNDONE|FAILED>
-  printf 'ST\t%d\t%s\n' "$1" "$2" >>"$JOURNAL"
+journal_mark() { # <seq> <PENDING|DONE|UNDONE|FAILED|FOREIGN>   rc 1 if it could not be written
+  printf 'ST\t%d\t%s\n' "$1" "$2" >>"$JOURNAL" || return 1
   sync "$JOURNAL" 2>/dev/null || true
 }
 
-journal_close() {
-  printf 'CLOSED\n' >>"$JOURNAL"
+journal_close() { # rc 1 if it could not be written: the journal is then NOT closed
+  printf 'CLOSED\n' >>"$JOURNAL" || return 1
   sync "$JOURNAL" 2>/dev/null || true
 }
 
 # journal_load <run>: fills JL_* (latest ST line wins), RUN_ID, RUN_VMID, JOURNAL.
+# The file is data we do not fully trust (a restored backup, a hand edit): every field is validated
+# BEFORE it is used, because a sequence number like `x[$(cmd)]` would otherwise run `cmd` as an
+# arithmetic subscript.
 journal_load() {
-  local f a b c rest
+  local f a b c rest bad=0
+  [[ $1 =~ ^[a-z][a-z0-9]{3,30}$ ]] || return 1
   f="$(state_dir)/runs/$1/journal"
   [[ -r $f ]] || return 1
   JL_N=0 JL_CLOSED=0
@@ -318,17 +384,35 @@ journal_load() {
   RUN_ID=$1 RUN_VMID="" JOURNAL=$f
   while IFS=$'\t' read -r a b c rest; do
     case $a in
-      RUN) RUN_VMID=$c ;;
-      STEP)
-        JL_KIND[b]=$c
-        JL_ARGS[b]=$rest
-        JL_STATE[b]=PENDING
-        if ((b > JL_N)); then JL_N=$b; fi
+      RUN)
+        if [[ $c =~ ^[0-9]+$ ]]; then RUN_VMID=$c; else bad=$((bad + 1)); fi
         ;;
-      ST) JL_STATE[b]=$c ;;
+      STEP)
+        if [[ $b =~ ^[0-9]{1,6}$ && $c =~ ^[a-z][a-z-]*$ ]]; then
+          b=$((10#$b))
+          JL_KIND[b]=$c
+          JL_ARGS[b]=$rest
+          JL_STATE[b]=PENDING
+          if ((b > JL_N)); then JL_N=$b; fi
+        else
+          bad=$((bad + 1))
+        fi
+        ;;
+      ST)
+        if [[ $b =~ ^[0-9]{1,6}$ && $c =~ ^(PENDING|DONE|UNDONE|FAILED|FOREIGN)$ ]]; then
+          b=$((10#$b))
+          JL_STATE[b]=$c
+        else
+          bad=$((bad + 1))
+        fi
+        ;;
       CLOSED) JL_CLOSED=1 ;;
     esac
   done <"$f"
+  if ((bad > 0)); then
+    printf 'vm2lxc: journal %s: ignored %d malformed line(s)\n' "$1" "$bad" >&2
+  fi
+  return 0
 }
 
 # runs_open: ids of runs whose journal is not CLOSED.
@@ -468,13 +552,19 @@ act_do_zfs_clone() { # <ds@snap> <clone> <key>
 }
 
 act_do_dev_ready() { # <device> <key>
-  local dev=$1 tries=${VM2LXC_WAIT_TRIES:-30} nap=${VM2LXC_WAIT_SLEEP:-1} n=0 rc=0
+  local dev=$1 tries=${VM2LXC_WAIT_TRIES:-30} nap=${VM2LXC_WAIT_SLEEP:-1} n=0 rc=0 real
   host_cmd udevadm settle --timeout=30 >/dev/null 2>&1 || rc=$?
   if ((rc == EXIT_REFUSED)); then return "$rc"; fi
   while ((n < tries)); do
     rc=0
-    host_cmd lsblk -nrpo NAME,FSTYPE "$dev" >/dev/null 2>&1 || rc=$?
-    if ((rc == 0)); then return 0; fi
+    host_cmd lsblk -P -n -p -o NAME,FSTYPE,TYPE "$dev" >/dev/null 2>&1 || rc=$?
+    if ((rc == 0)); then
+      # The real lsblk prints KERNEL names for a zvol (/dev/zd16, /dev/zd16p1), not the /dev/zvol path
+      # it was given. Remember which zd device is the clone we just made, so those names are ours.
+      real=$(dev_realpath "$dev")
+      if [[ $real =~ ^/dev/zd[0-9]+$ ]]; then OURS_ZDS+=("$real"); fi
+      return 0
+    fi
     if ((rc == EXIT_REFUSED)); then return "$rc"; fi
     n=$((n + 1))
     sleep "$nap"
@@ -484,7 +574,8 @@ act_do_dev_ready() { # <device> <key>
 }
 
 act_do_mount_disk() { # <device> <key> <target>
-  local dev=$1 key=$2 target=$3 out name fstype opts mnt seq n_mounted=0 rc
+  local dev=$1 key=$2 target=$3 out line name fstype ltype opts mnt seq n_mounted=0 rc nested=0
+  local re='^NAME="([^"]*)" FSTYPE="([^"]*)" TYPE="([^"]*)"$'
   if [[ $dev == loop:* ]]; then
     dev=${LOOP_DEV[${dev#loop:}]:-}
     if [[ -z $dev ]]; then
@@ -492,9 +583,21 @@ act_do_mount_disk() { # <device> <key> <target>
       return 1
     fi
   fi
-  out=$(host_cmd lsblk -nrpo NAME,FSTYPE "$dev") || return $?
-  while read -r name fstype; do
-    [[ -n $name && -n ${fstype:-} ]] || continue # the disk line itself, or a partition with no filesystem
+  out=$(host_cmd lsblk -P -n -p -o NAME,FSTYPE,TYPE "$dev") || return $?
+  while IFS= read -r line; do
+    [[ $line =~ $re ]] || continue
+    name=${BASH_REMATCH[1]} fstype=${BASH_REMATCH[2]} ltype=${BASH_REMATCH[3]}
+    # lsblk lists CHILDREN too. If udev auto-activated a guest LVM volume group or md array on one of our
+    # partitions, its volumes show up here as /dev/mapper/... or /dev/md*: they are the guest's, not ours.
+    case $ltype in
+      loop | part | disk) ;;
+      *)
+        SKIPPED+=("$key|$name|${fstype:--}|a nested $ltype device (a guest LVM or RAID volume that udev activated): not used")
+        nested=1
+        continue
+        ;;
+    esac
+    [[ -n $fstype ]] || continue # the disk itself, or a partition with no filesystem
     if ! opts=$(mount_opts_for "$fstype"); then
       case $fstype in
         LVM2_member | crypto_LUKS | linux_raid_member)
@@ -505,22 +608,28 @@ act_do_mount_disk() { # <device> <key> <target>
       continue
     fi
     mnt="$(run_root)/$RUN_ID/$key/${name##*/}"
-    journal_step mount "$name" "$mnt" "$fstype"
+    journal_step mount "$name" "$mnt" "$fstype" || {
+      journal_unwritable
+      return 1
+    }
     seq=$LAST_SEQ
     rc=0
     host_cmd mkdir -p "$mnt" || rc=$?
     if ((rc == 0)); then host_cmd mount -o "$opts" -t "$fstype" "$name" "$mnt" || rc=$?; fi
     if ((rc != 0)); then
-      journal_mark "$seq" FAILED
+      journal_mark "$seq" FAILED || true
       return "$rc"
     fi
-    journal_mark "$seq" DONE
+    journal_mark "$seq" DONE || true
     MOUNTS+=("$key|$target|$name|$mnt|$fstype")
     n_mounted=$((n_mounted + 1))
     if [[ $fstype == btrfs ]]; then
       MOUNT_NOTES+=("$name is btrfs: only its default subvolume is visible")
     fi
   done <<<"$out"
+  if ((nested)); then
+    MOUNT_NOTES+=("disk $key holds a guest LVM or RAID volume that the host activated; it was left alone, but it can keep the partition busy, so teardown may need a retry (vm2lxc cleanup)")
+  fi
   if ((n_mounted == 0)); then
     MOUNT_NOTES+=("disk $key: no supported filesystem was found on $dev")
   fi
@@ -545,7 +654,7 @@ act_undo_zfs_snapshot() { # <snapname> <ds1,ds2,...>
         continue
         ;;
     esac
-    stamp=$(host_cmd zfs get -H -o value vm2lxc:run "$snap") || {
+    stamp=$(host_cmd zfs get -H -o value -s local vm2lxc:run "$snap") || {
       final=$?
       continue
     }
@@ -567,7 +676,7 @@ act_undo_zfs_clone() { # <ds@snap> <clone> <key>
     1) return 0 ;;
     *) return "$rc" ;;
   esac
-  stamp=$(host_cmd zfs get -H -o value vm2lxc:run "$clone") || return $?
+  stamp=$(host_cmd zfs get -H -o value -s local vm2lxc:run "$clone") || return $?
   if [[ $stamp != "$run" ]]; then
     refuse "clone $clone exists but its vm2lxc:run stamp is '$stamp', not '$run': left alone"
     return
@@ -591,8 +700,17 @@ act_undo_loop_attach() { # </dev/vg/snaplv> <key>
     refuse "loop-attach undo: '$dev' is not one of our snapshot devices"
     return
   }
-  out=$(host_cmd losetup -j "$dev" 2>/dev/null) || rc=$?
-  if ((rc == EXIT_REFUSED)); then return "$rc"; fi
+  # If the snapshot LV is gone, nothing can be attached to it. If we cannot tell, that is an ERROR,
+  # not "absent": marking the step UNDONE on a failed probe would hide a live loop device for good.
+  lv_exists "${dev#/dev/}" || rc=$?
+  case $rc in
+    0) ;;
+    1) return 0 ;;
+    *) return "$rc" ;;
+  esac
+  rc=0
+  out=$(host_cmd losetup -j "$dev") || rc=$?
+  if ((rc != 0)); then return "$rc"; fi
   [[ -n $out ]] || return 0
   while IFS= read -r line; do
     loopdev=${line%%:*}
@@ -636,8 +754,13 @@ act_undo_mount() { # <device> <mountpoint> <fstype>
   host_cmd mountpoint -q "$mnt" >/dev/null 2>&1 || rc=$?
   case $rc in
     0) host_cmd umount "$mnt" || return $? ;;
-    "$EXIT_REFUSED") return "$rc" ;;
-    *) ;; # not a mountpoint (or already gone): nothing to unmount
+    1) ;; # the directory exists and is not a mountpoint: nothing to unmount
+    32)
+      # util-linux uses 32 for "cannot stat it". A missing directory means nothing is mounted there;
+      # a directory that exists but cannot be examined is an ERROR, not "unmounted".
+      if [[ -e $mnt ]]; then return "$rc"; fi
+      ;;
+    *) return "$rc" ;; # a refusal (77), a timeout (124), anything else: never assume "not mounted"
   esac
   host_cmd rmdir "$mnt" 2>/dev/null || true
   host_cmd rmdir "${mnt%/*}" 2>/dev/null || true
@@ -653,17 +776,20 @@ run_apply() {
   for line in "${PLAN[@]}"; do
     IFS='|' read -ra f <<<"$line"
     kind=${f[0]}
-    journal_step "$kind" "${f[@]:1}"
+    journal_step "$kind" "${f[@]:1}" || {
+      journal_unwritable
+      return 1
+    }
     seq=$LAST_SEQ
     rc=0
     STEP_FOREIGN=0
     "act_do_${kind//-/_}" "${f[@]:1}" || rc=$?
     if ((rc != 0)); then
       # A pre-existing object is not ours: record that, so teardown can never destroy it.
-      if ((STEP_FOREIGN)); then journal_mark "$seq" FOREIGN; else journal_mark "$seq" FAILED; fi
+      if ((STEP_FOREIGN)); then journal_mark "$seq" FOREIGN || true; else journal_mark "$seq" FAILED || true; fi
       return "$rc"
     fi
-    journal_mark "$seq" DONE
+    journal_mark "$seq" DONE || true # if this is lost the step stays PENDING, which teardown handles
   done
 }
 
@@ -671,7 +797,7 @@ run_apply() {
 # rc 0 only when everything is gone and the journal is CLOSED; otherwise the journal stays
 # open so that `vm2lxc cleanup` can finish the job.
 run_teardown() {
-  local run=$1 n kind state rc final=0
+  local run=$1 n kind state rc final=0 jfail=0
   local -a args
   journal_load "$run" || {
     printf 'vm2lxc: no journal for run %s\n' "$run" >&2
@@ -690,7 +816,7 @@ run_teardown() {
     rc=0
     "act_undo_${kind//-/_}" "${args[@]}" || rc=$?
     if ((rc == 0)); then
-      journal_mark "$n" UNDONE
+      journal_mark "$n" UNDONE || jfail=1
     else
       # STOP at the first failure. The steps below this one are what it sits on (a mount sits
       # on a loop device or a clone, which sits on a snapshot): destroying them while it is
@@ -704,7 +830,10 @@ run_teardown() {
   if ((final == 0)); then
     host_cmd rmdir "$(run_root)/$run" 2>/dev/null || true
     host_cmd rmdir "$(run_root)" 2>/dev/null || true # the base dir, if no other run is using it
-    journal_close
+    if ((jfail)) || ! journal_close; then
+      printf 'vm2lxc: everything was undone but the journal %s could not be updated: it stays open (cleanup is safe to repeat)\n' "$JOURNAL" >&2
+      final=1
+    fi
   fi
   return "$final"
 }

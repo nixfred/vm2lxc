@@ -11,7 +11,7 @@ Plain bash and `jq`. No AI in the tool. No network access. MIT licensed.
     <td align="center"><b>Status</b><br>alpha</td>
     <td align="center"><b>Proxmox VE</b><br>9.2 verified<br>8.x untested</td>
     <td align="center"><b>Storage</b><br>LVM-thin verified<br>ZFS: fake only</td>
-    <td align="center"><b>Tests</b><br>256, 0 skipped</td>
+    <td align="center"><b>Tests</b><br>283, 0 skipped</td>
     <td align="center"><b>Converts VMs?</b><br>not yet</td>
   </tr>
 </table>
@@ -226,10 +226,16 @@ This project's claim is "safe", so the evidence matters more than the claim.
   (`SIGKILL`, `SIGTERM`, `SIGHUP`). `SIGKILL` leaves at most a stray snapshot, and `cleanup --yes` restored
   the exact baseline each time. The sweep found two genuine gaps (a signal during teardown aborted it;
   `SIGHUP` had no handler), both fixed and re-verified.
-- **256 tests, 0 skipped**, plus `shellcheck` clean. A **stateful fake** of `zfs`, LVM, `losetup` and `mount`
+- **283 tests, 0 skipped**, plus `shellcheck` clean. A **stateful fake** of `zfs`, LVM, `losetup` and `mount`
   with fault injection covers every row of the failure matrix: snapshot fails, crash after snapshot, the
   second clone fails, the device never appears, a mount fails halfway, teardown fails midway, teardown twice,
   wrong stamp, wrong origin, pre-existing objects, a held lock, `SIGTERM`/`SIGHUP` mid-run.
+- **Independent review.** A fresh-context reviewer, with no access to the author's reasoning, read the safety layer
+  and reported 12 findings; the author reproduced the key ones before fixing (a failed journal write that was
+  silently ignored, a crafted journal that executed a command, `SIGPIPE` killing the teardown, a guest
+  symlink that pointed at the host's `/etc`, and a ZFS mount path that real `lsblk` would never print). All are
+  fixed with a regression test each (rails R16-R21 in the design page). A second automated reviewer
+  produced no output in four attempts, which is recorded rather than hidden.
 - **Mutation testing.** The safety rails were attacked on purpose (stamp checks removed, `-f` allowed, a
   read-write mount permitted, the journal written after the command, teardown continuing after a failure,
   and more). Every weakening tried was caught by at least one test, and the tests that missed one were fixed.
