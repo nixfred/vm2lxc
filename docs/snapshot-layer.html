@@ -23,22 +23,22 @@
 <body>
 <main>
 <h1>Snapshot-mount layer</h1>
-<p class="dim">vm2lxc, slice 2, first increment. Written 2026-11-17 by Larry:gus. Status: <span class="tag warn">design + code against fakes, never run on a real host</span></p>
+<p class="dim">vm2lxc, snapshot-mount layer. Updated 2026-11-17. Status: <span class="tag ok">LVM-thin verified on a real PVE 9.2 host</span> <span class="tag warn">ZFS only ever run against the fake</span></p>
 
 <h2>1. What it is for</h2>
 <p>Give the guest-internal checks (and later the copy step) a <b>read-only view of each VM disk's filesystems</b> without ever modifying the source volume, and guarantee that everything it creates is removed again, even on a crash. Decision D1 (storage-level snapshots, not <code>qm snapshot</code>), BRIEF section 6.3.</p>
 <table>
 <tr><th>In this increment</th><th>Not yet</th></tr>
 <tr><td>
-ZFS zvols: full lifecycle (snapshot, read-only clone, mount, unmount, destroy), tested against a stateful fake.<br>
-LVM-thin: the <b>plan</b> is generated and tested; execution refuses with a clear message.<br>
+LVM-thin: full lifecycle (thin snapshot, read-only loop device, mount, unmount, remove), <b>run for real on a PVE 9.2 host</b> and tested against a stateful fake.<br>
+ZFS zvols: full lifecycle (snapshot, read-only clone, mount, unmount, destroy), tested against the same fake only: <b>no real ZFS run yet</b>.<br>
 Filesystems: ext2/3/4, XFS, btrfs (default subvolume).<br>
 A write-ahead journal, a run lock, <code>vm2lxc inspect &lt;vmid&gt;</code> (plan by default, <code>--yes</code> executes) and a real <code>vm2lxc cleanup</code>.
 </td><td>
-LVM-thin execution, qcow2, Ceph (later, per D1).<br>
+qcow2 and Ceph (later, per D1).<br>
 Guest LVM / LUKS / mdraid: detected and reported, not opened (needs <code>vgimportclone</code> / unlock).<br>
 Running the guest checks' real logic (they still report pending).<br>
-Any run against a real Proxmox host: <b>none was made</b>. KICKOFF's hard rule still stands.
+Anything that changes the VM or its disks: this layer only ever reads them.
 </td></tr>
 </table>
 
@@ -57,11 +57,11 @@ Any run against a real Proxmox host: <b>none was made</b>. KICKOFF's hard rule s
 
 <h2>3. Names and what is created</h2>
 <table>
-<tr><th>Object</th><th>ZFS</th><th>LVM-thin (plan only)</th></tr>
+<tr><th>Object</th><th>ZFS (fake only)</th><th>LVM-thin (verified for real)</th></tr>
 <tr><td>run id</td><td colspan="2"><code>r</code> + epoch + 4 hex, e.g. <code>r1731800000a3f1</code> (regex <code>^[a-z][a-z0-9]{3,30}$</code>)</td></tr>
 <tr><td>snapshot</td><td><code>&lt;pool/ds&gt;@vm2lxc-&lt;run&gt;</code>, user property <code>vm2lxc:run=&lt;run&gt;</code></td><td><code>lvcreate -s</code> named <code>vm2lxc-&lt;vmid&gt;-&lt;run&gt;-&lt;diskkey&gt;</code>, tag <code>vm2lxc-&lt;run&gt;</code></td></tr>
-<tr><td>clone / device</td><td><code>&lt;parent&gt;/vm2lxc-&lt;vmid&gt;-&lt;run&gt;-&lt;diskkey&gt;</code>, <code>readonly=on</code>, stamped; device <code>/dev/zvol/&lt;clone&gt;</code>, partitions <code>-partN</code></td><td>made read-only with <code>lvchange -pr</code>, activated <code>-ay -K</code>, partitions via <code>kpartx -a -r</code></td></tr>
-<tr><td>mounts</td><td colspan="2"><code>/run/vm2lxc/&lt;run&gt;/&lt;diskkey&gt;/&lt;partition&gt;</code></td></tr>
+<tr><td>clone / device</td><td><code>&lt;parent&gt;/vm2lxc-&lt;vmid&gt;-&lt;run&gt;-&lt;diskkey&gt;</code>, <code>readonly=on</code>, stamped; device <code>/dev/zvol/&lt;clone&gt;</code>, partitions <code>-partN</code></td><td>made read-only with <code>lvchange -pr</code>, activated <code>-ay -K</code>, then <code>losetup -r -f --show -P</code> (read-only loop device with partition scan; <code>kpartx</code> is not needed and is not installed on a stock PVE 9)</td></tr>
+<tr><td>mounts</td><td colspan="2"><code>/run/vm2lxc/&lt;run&gt;/&lt;diskkey&gt;/&lt;partition&gt;</code>. A disk with no partition table (a filesystem on the whole disk) is mounted from the loop device itself.</td></tr>
 </table>
 <p class="dim">The source dataset or LV is only ever the <b>origin</b> of a snapshot. It is never opened, written, renamed or property-edited (<code>snapdev=visible</code> would edit it, so it is not used).</p>
 
@@ -97,7 +97,12 @@ CLOSED</pre>
 <tr><td>R6</td><td>Every mutating command passes one function, <code>host_cmd</code>, an allowlist of exact argument shapes. Anything else dies. It lives only in <code>lib/hostexec.sh</code>.</td><td>allowlist + static test</td></tr>
 <tr><td>R7</td><td>Mounts are read-only only (<code>ro</code> must be in the options), only for filesystems in the table above, and only on devices under our own clone path.</td><td><code>host_cmd mount</code></td></tr>
 <tr><td>R8</td><td><code>inspect</code> executes nothing without <code>--yes</code>, and refuses to execute at all in fixture mode and when not root on a PVE node.</td><td>command code + tests</td></tr>
-<tr><td>R9</td><td>A pre-existing object with the name we are about to create is a refusal, never adopted.</td><td>apply handlers</td></tr>
+<tr><td>R9</td><td>A pre-existing object with the name we are about to create is a refusal, never adopted. The step is journalled <code>FOREIGN</code>, so teardown can never destroy it later, even if its stamp happens to match.</td><td>apply handlers, teardown</td></tr>
+<tr><td>R10</td><td>Teardown <b>stops at the first failed undo</b>. A mount sits on a loop device or clone, which sits on a snapshot: destroying those while the mount is still there would be wrong. The journal stays open and the next <code>cleanup</code> continues.</td><td><code>run_teardown</code></td></tr>
+<tr><td>R11</td><td>Children never inherit the run lock or the saved stdout/stderr (a long-lived child holding the lock would keep it after we exit). Found on the first real run.</td><td><code>host_cmd</code> closes them before exec</td></tr>
+<tr><td>R12</td><td>Every host command is time-bounded (<code>VM2LXC_CMD_TIMEOUT</code>, default 120 s; note that <code>0</code> means "no limit", as in coreutils). A hung command cannot wedge a run or its teardown.</td><td><code>host_cmd</code></td></tr>
+<tr><td>R13</td><td>Names never start with <code>-</code> or <code>.</code>: a VG, LV or storage ID like <code>-x</code> would reach an LVM or <code>pvesm</code> command line as an <i>option</i>.</td><td>name patterns</td></tr>
+<tr><td>R14</td><td>SIGINT, SIGTERM and SIGHUP are <b>ignored while tearing down</b>. A signal during teardown must never leave half of what it was removing. SIGKILL still works, and <code>cleanup</code> recovers from the journal.</td><td><code>inspect_trap</code></td></tr>
 </table>
 
 <h2>7. Failure matrix (each is a test against the stateful fake)</h2>
@@ -113,27 +118,42 @@ CLOSED</pre>
 <tr><td>object has the right name but the wrong stamp</td><td>refused (R3), left alone, exit 77</td></tr>
 <tr><td>another <code>inspect</code> or <code>cleanup</code> holds the lock</td><td>refuses, touches nothing</td></tr>
 <tr><td>Ctrl-C or SIGTERM during apply</td><td>trap runs teardown</td></tr>
+<tr><td>SIGHUP (the ssh session drops) during apply</td><td>trap runs teardown, exit 129</td></tr>
+<tr><td>another signal while the teardown is running</td><td>ignored, the teardown completes (R14)</td></tr>
+<tr><td>SIGKILL at any point</td><td>nothing can run; the journal says what may exist; <code>cleanup --yes</code> removes it</td></tr>
+<tr><td>a storage command hangs</td><td>cut off by the per-command timeout (R12); the run fails and tears down</td></tr>
+<tr><td>a signal lands inside <code>cmd >/dev/null 2>&amp;1</code></td><td>the trap writes to saved descriptors, so its messages are not swallowed</td></tr>
 </table>
 
-<h2>8. Assumptions that only a real host can confirm</h2>
+<h2>8. Verified on a real host (PVE 9.2.28, LVM-thin)</h2>
+<p>Everything here was done on a live hypervisor against four disposable test VMs (Debian 12, Ubuntu 24.04, Alpine, and a two-disk Debian), checked against a baseline taken before each run.</p>
 <ul>
-<li><code>pvesm path &lt;storage:vol&gt;</code> prints <code>/dev/zvol/&lt;pool/ds&gt;</code> for zfspool and <code>/dev/&lt;vg&gt;/&lt;lv&gt;</code> for lvmthin.</li>
-<li><code>zfs snapshot -o vm2lxc:run=...</code> and <code>zfs clone -o readonly=on -o vm2lxc:run=...</code> are accepted for zvols on PVE 8/9's OpenZFS.</li>
-<li>zvol partition nodes appear as <code>&lt;clone&gt;-part1</code> after <code>udevadm settle</code>.</li>
-<li><code>lsblk -nrpo NAME,FSTYPE &lt;dev&gt;</code> lists the device and its partitions with filesystem types.</li>
-<li>A read-only clone of a snapshot of a <i>running</i> VM's zvol mounts cleanly with <code>ro,noload</code> (crash-consistent).</li>
-<li>The BRIEF's checksum proof (source volume bit-identical before and after) still has to be run on a disposable nested PVE.</li>
+<li><b>Lifecycle:</b> thin snapshot, read-only, activated, read-only loop device, filesystems mounted <code>ro,noload</code>, guest root found, teardown. Host back to the baseline every time: same LV list, same thin-pool usage, no loop devices, no mounts, journal <code>CLOSED</code>, nobody holding the lock. The VMs kept running.</li>
+<li><b>Layouts seen:</b> a root plus an EFI partition, two ext4 partitions (root plus boot), and a whole-disk ext4 with no partition table.</li>
+<li><b>Source never modified:</b> on a stopped two-disk VM, the sha256 of both source volumes was identical before and after a run (the BRIEF's checksum proof).</li>
+<li><b>Crash injection:</b> 61 runs killed at points through the execution window with SIGKILL, SIGTERM and SIGHUP. SIGKILL leaves at most a stray snapshot LV and <code>cleanup --yes</code> restored the exact baseline each time. The sweep also found two real gaps (a signal during teardown aborted it; SIGHUP had no handler), both fixed and re-verified: 26 of 26 later TERM/HUP runs left the host clean.</li>
+<li><b>Found only by the real run:</b> LVM reported the leaked lock descriptor (R11); PVE 9 prints a <code>Total (KiB)</code> storage header, <code>template: null</code> in the VM list, and a 30-minute month RRD step.</li>
 </ul>
 
-<h2>9. Open questions for Fred</h2>
+<h2>9. Still unverified</h2>
+<ul>
+<li><b>ZFS has never run on real hardware.</b> <code>pvesm path</code> printing <code>/dev/zvol/&lt;pool/ds&gt;</code> for a zfspool volume is an assumption (the lvmthin form, <code>/dev/&lt;vg&gt;/&lt;lv&gt;</code>, was confirmed).</li>
+<li><code>zfs snapshot -o vm2lxc:run=...</code> and <code>zfs clone -o readonly=on -o vm2lxc:run=...</code> are accepted for zvols on PVE 8/9's OpenZFS.</li>
+<li>zvol partition nodes appear as <code>&lt;clone&gt;-part1</code> after <code>udevadm settle</code>.</li>
+<li>XFS and btrfs guests have not been mounted for real (ext4 has).</li>
+<li>PVE 8.x has not been run (only 9.2.28).</li>
+<li>A guest with LUKS, LVM or mdraid inside is reported as skipped, but was only tested against the fake.</li>
+</ul>
+
+<h2>10. Open questions</h2>
 <ol>
-<li>Is <code>vm2lxc inspect &lt;vmid&gt;</code> (plan by default, <code>--yes</code> to execute) the right user-facing name, or should this stay internal until <code>convert</code> exists?</li>
+<li>Is <code>vm2lxc inspect &lt;vmid&gt;</code> (plan by default, <code>--yes</code> to execute) the right user-facing name? It has proven useful on its own.</li>
 <li>Clones are created next to the source zvol, so Proxmox lists them as orphan volumes while a run is live. Acceptable, or use a dedicated scratch dataset (one persistent object to create and own)?</li>
 <li>Where should the journals live long term: <code>/var/lib/vm2lxc/runs/</code> as built, or per-VM as BRIEF 4.10 sketched?</li>
 </ol>
 
 <script type="application/json" id="state">
-{"doc":"snapshot-layer","version":1,"date":"2026-11-17","status":"design+fakes","executable_storage":["zfspool"],"plan_only_storage":["lvmthin"],"rails":["R1","R2","R3","R4","R5","R6","R7","R8","R9"],"real_host_runs":0,"task":"vm2lxc-snapshot-layer-s2"}
+{"doc":"snapshot-layer","version":2,"date":"2026-11-17","status":"lvmthin verified on PVE 9.2.28; zfs fake only","real_verified_storage":["lvmthin"],"fake_only_storage":["zfspool"],"rails":["R1","R2","R3","R4","R5","R6","R7","R8","R9","R10","R11","R12","R13","R14"],"real_host_vms":4,"real_host_crash_injections":61,"checksum_proof":"identical"}
 </script>
 </main>
 </body>
