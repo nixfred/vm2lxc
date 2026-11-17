@@ -184,7 +184,8 @@ as if every line will eventually meet a bad day. The full design, with the failu
     are ignored. `SIGKILL` is recovered by `cleanup`.
 11. **Every host command is time-bounded**, children do not inherit the run lock, and names that could be
     read as command-line options are refused.
-12. **Nothing executes without `--yes`**, never in fixture mode, and never without root on a real node.
+12. **A locked VM is never snapshotted.** A `lock` (backup, rollback, migrate, ...) means something is working on its disks.
+13. **Nothing executes without `--yes`**, never in fixture mode, and never without root on a real node.
 
 ## How `inspect` works
 

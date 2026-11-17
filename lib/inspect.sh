@@ -71,7 +71,7 @@ pick_guest_root() {
 }
 
 cmd_inspect() {
-  local vmid run vstate m key target dev mnt fs s
+  local vmid run vstate m key target dev mnt fs s vm_lock
   (($# == 1)) || die "$EXIT_USAGE" "usage: vm2lxc inspect <vmid>"
   vmid=$1
   vmid_valid "$vmid" || die "$EXIT_USAGE" "not a valid VM id: '$vmid' (expected a number, 100 or higher)"
@@ -88,6 +88,10 @@ cmd_inspect() {
   if [[ $vstate == running ]]; then
     printf 'Note: the VM is running, so the snapshot is crash-consistent, not application-consistent.\n\n'
   fi
+  vm_lock=$(qmc_get lock)
+  if [[ -n $vm_lock ]]; then
+    printf 'Note: the VM is locked (lock: %s): another operation is working on it. --yes will refuse until the lock is gone.\n\n' "$vm_lock"
+  fi
   snap_plan_print "$vmid" "$run"
 
   if ((!OPT_YES)) || ((OPT_DRY_RUN)); then
@@ -97,6 +101,12 @@ cmd_inspect() {
 
   snap_plan_executable || die "$EXIT_NOTIMPL" "$PLAN_ERR"
   exec_guard
+  # A lock (backup, rollback, migrate, clone, snapshot-delete, ...) means something is working on
+  # this VM's disks right now. Snapshotting an LV that is being swapped or removed is exactly
+  # what a safety layer must not do. Seen on a real host: backup jobs lock the test VMs.
+  if [[ -n $vm_lock ]]; then
+    die "$EXIT_REFUSED" "VM $vmid is locked (lock: $vm_lock): another operation is running on it, so vm2lxc will not snapshot its disks now. Retry when the lock is gone."
+  fi
   lock_acquire || die "$EXIT_REFUSED" "another vm2lxc run holds the lock (no changes made)"
   journal_new "$vmid" "$run" || die "$EXIT_ENV" "could not create the journal under $(state_dir)"
   exec {INSPECT_OUT_FD}>&1 {INSPECT_ERR_FD}>&2

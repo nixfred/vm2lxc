@@ -102,6 +102,7 @@ CLOSED</pre>
 <tr><td>R11</td><td>Children never inherit the run lock or the saved stdout/stderr (a long-lived child holding the lock would keep it after we exit). Found on the first real run.</td><td><code>host_cmd</code> closes them before exec</td></tr>
 <tr><td>R12</td><td>Every host command is time-bounded (<code>VM2LXC_CMD_TIMEOUT</code>, default 120 s; note that <code>0</code> means "no limit", as in coreutils). A hung command cannot wedge a run or its teardown.</td><td><code>host_cmd</code></td></tr>
 <tr><td>R13</td><td>Names never start with <code>-</code> or <code>.</code>: a VG, LV or storage ID like <code>-x</code> would reach an LVM or <code>pvesm</code> command line as an <i>option</i>.</td><td>name patterns</td></tr>
+<tr><td>R15</td><td>A VM with a <code>lock</code> (backup, rollback, migrate, clone, snapshot-delete, ...) is not snapshotted: something is working on its disks. The plan says so and <code>--yes</code> refuses (exit 77) before creating anything. Backup jobs locked the test VMs on the real host.</td><td><code>cmd_inspect</code></td></tr>
 <tr><td>R14</td><td>SIGINT, SIGTERM and SIGHUP are <b>ignored while tearing down</b>. A signal during teardown must never leave half of what it was removing. SIGKILL still works, and <code>cleanup</code> recovers from the journal.</td><td><code>inspect_trap</code></td></tr>
 </table>
 
@@ -153,7 +154,7 @@ CLOSED</pre>
 </ol>
 
 <script type="application/json" id="state">
-{"doc":"snapshot-layer","version":2,"date":"2026-11-17","status":"lvmthin verified on PVE 9.2.28; zfs fake only","real_verified_storage":["lvmthin"],"fake_only_storage":["zfspool"],"rails":["R1","R2","R3","R4","R5","R6","R7","R8","R9","R10","R11","R12","R13","R14"],"real_host_vms":4,"real_host_crash_injections":61,"checksum_proof":"identical"}
+{"doc":"snapshot-layer","version":2,"date":"2026-11-17","status":"lvmthin verified on PVE 9.2.28; zfs fake only","real_verified_storage":["lvmthin"],"fake_only_storage":["zfspool"],"rails":["R1","R2","R3","R4","R5","R6","R7","R8","R9","R10","R11","R12","R13","R14","R15"],"real_host_vms":4,"real_host_crash_injections":61,"checksum_proof":"identical"}
 </script>
 </main>
 </body>

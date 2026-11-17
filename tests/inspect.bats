@@ -92,6 +92,22 @@ no_tool_called() {
   [ "$status" -eq 64 ]
 }
 
+@test "a locked VM: the plan says so, and --yes refuses (77) before any storage tool runs (seen on a real host: backup locks)" {
+  local fx="$BATS_TEST_TMPDIR/fx"
+  cp -r "$FIXTURES/pve8" "$fx"
+  printf 'lock: backup\n' >>"$fx/qm-config-100.txt"
+  seed_vm100
+  VM2LXC_RUN_ID=rtest01 VM2LXC_FIXTURE_DIR="$fx" run "$VM2LXC" inspect 100
+  [ "$status" -eq 0 ]
+  [[ $output == *"the VM is locked (lock: backup)"*"--yes will refuse until the lock is gone"* ]]
+  VM2LXC_TEST_EXEC=1 VM2LXC_RUN_ID=rtest01 VM2LXC_FIXTURE_DIR="$fx" run "$VM2LXC" inspect 100 --yes
+  [ "$status" -eq 77 ]
+  [[ $output == *"VM 100 is locked (lock: backup)"*"will not snapshot its disks now"* ]]
+  no_tool_called
+  [ ! -d "$VM2LXC_STATE_DIR/runs" ]
+  zfs_has "$Z1"
+}
+
 @test "R8: --yes is refused (77) in fixture mode without the test switch, and nothing is created" {
   seed_vm100
   VM2LXC_RUN_ID=rtest01 run_fx inspect 100 --yes
