@@ -134,7 +134,9 @@ no_tool_called() {
   [[ $output == *"scsi0    rootfs  ext4"*"$CD0-part1"* ]]
   [[ $output == *"skipped $CD0-part2 (vfat): not a filesystem vm2lxc mounts"* ]]
   [[ $output == *"Guest root: $VM2LXC_RUN_ROOT/rtest01/scsi0/"* ]]
-  [[ $output == *"Guest checks: 0 ran, 12 pending (not implemented yet)."* ]]
+  [[ $output == *"Guest checks: 12 ran, 0 pending."* ]]
+  [[ $output == *"[YELLOW] /etc/os-release has no ID"* ]] # the fake guest has a bare os-release
+  [[ $output == *"Guest verdict: YELLOW"* ]]
   assert_nothing_left
   zfs_has "$Z1"
   [[ -z $(runs_open) ]]

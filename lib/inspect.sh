@@ -177,13 +177,14 @@ cmd_inspect() {
   findings_reset
   guest_checks_run
   verdict_compute
-  printf 'Guest checks: %d ran, %d pending (not implemented yet).\n' "${#GUEST_RAN[@]}" "${#GUEST_PENDING[@]}"
+  printf 'Guest checks: %d ran, %d pending.\n' "${#GUEST_RAN[@]}" "${#GUEST_PENDING[@]}"
   local i
   for i in "${!F_LEVEL[@]}"; do
     case ${F_LEVEL[$i]} in
-      red | yellow) printf '  [%s] %s\n' "${F_LEVEL[$i]^^}" "${F_MSG[$i]}" ;;
+      red | yellow | info) printf '  [%s] %s\n' "${F_LEVEL[$i]^^}" "${F_MSG[$i]}" ;;
     esac
   done
+  printf 'Guest verdict: %s (VM-config checks: run vm2lxc preflight)\n' "${VERDICT^^}"
   return 0
 }
 

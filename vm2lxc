@@ -22,6 +22,8 @@ source "$VM2LXC_LIBDIR/storage.sh"
 source "$VM2LXC_LIBDIR/findings.sh"
 # shellcheck source=lib/checks_cfg.sh
 source "$VM2LXC_LIBDIR/checks_cfg.sh"
+# shellcheck source=lib/guestfs.sh
+source "$VM2LXC_LIBDIR/guestfs.sh"
 # shellcheck source=lib/checks_guest.sh
 source "$VM2LXC_LIBDIR/checks_guest.sh"
 # shellcheck source=lib/sizing.sh

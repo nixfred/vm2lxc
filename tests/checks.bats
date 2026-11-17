@@ -252,7 +252,15 @@ setup() {
   done
 }
 
+# The mechanism tests below are about the plug-in contract, not about the real checks: start from a
+# registry with NO implementations, then define only the one under test.
+clear_real_checks() {
+  local id
+  for id in "${GUEST_CHECK_IDS[@]}"; do unset -f "guest_check_${id//-/_}"; done
+}
+
 @test "guest checks: an implementation plugs in, runs against GUEST_ROOT, and changes the verdict" {
+  clear_real_checks
   guest_check_docker() { # the contract: one arg, the guest root
     [[ -d $1/var/lib/docker ]] && finding red guest-docker guest "Docker data found under $1/var/lib/docker"
     return 0
@@ -278,6 +286,7 @@ setup() {
 }
 
 @test "guest checks: an implementation that finds nothing is a pass, not a pending" {
+  clear_real_checks
   guest_check_snap() { return 0; }
   GUEST_ROOT="$BATS_TEST_TMPDIR"
   findings_reset
@@ -289,6 +298,7 @@ setup() {
 }
 
 @test "guest checks: an implementation is NOT called when GUEST_ROOT is unset" {
+  clear_real_checks
   guest_check_docker() { finding red guest-docker guest "should never run"; }
   unset GUEST_ROOT
   findings_reset
