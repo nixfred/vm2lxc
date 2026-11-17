@@ -1088,6 +1088,8 @@ ST="/stage-placeholder"
   [ "$status" -eq 0 ]
   run hc_ctedit cp -p --remove-destination "$ct/etc/fstab" "$ct/etc/fstab.vm2lxc-orig"
   [ "$status" -eq 0 ]
+  run hc_ctedit sed -i -E "$SED_NETPLAN_EXPR" "$ct/etc/netplan/50-cloud-init.yaml"
+  [ "$status" -eq 0 ]
   run hc_ctedit touch "$ct/etc/cloud/cloud-init.disabled"
   [ "$status" -eq 0 ]
   run hc_ctedit ln -sfn /dev/null "$ct/etc/systemd/system/serial-getty@ttyS0.service"
@@ -1095,6 +1097,9 @@ ST="/stage-placeholder"
   refused sed -i -E 's/.*/pwned/' "$ct/etc/fstab"
   refused sed -i "$SED_FSTAB_EXPR" "$ct/etc/fstab"
   refused sed -i -E "$SED_FSTAB_EXPR" /etc/fstab
+  refused sed -i -E "$SED_NETPLAN_EXPR" /etc/netplan/50-cloud-init.yaml
+  refused sed -i -E "$SED_NETPLAN_EXPR" "$VM2LXC_CT_ROOT/901/rootfs/etc/netplan/x.yaml"
+  refused sed -i -E "${SED_NETPLAN_EXPR};s/^/x/" "$ct/etc/netplan/50-cloud-init.yaml"
   refused sed -i -E "$SED_FSTAB_EXPR" "$ct/../../etc/fstab"
   refused sed -i -E "$SED_FSTAB_EXPR" "$VM2LXC_CT_ROOT/901/rootfs/etc/fstab"
   refused sed -n -E "$SED_FSTAB_EXPR" "$ct/etc/fstab"

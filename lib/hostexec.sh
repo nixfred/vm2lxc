@@ -110,6 +110,12 @@ RE_CT_TAGS='^[A-Za-z0-9_.;-]{1,300}$'
 RE_CT_DESC='^[A-Za-z0-9 _.,:=()/-]{1,300}$'
 RE_OSTYPE='^(unmanaged|debian|ubuntu|devuan|alpine|archlinux|fedora|centos|opensuse|gentoo|nixos)$'
 
+# netplan, as cloud-init writes it, matches the NIC by its PERMANENT MAC (match: / macaddress: / set-name:). A
+# veth has no permanent MAC, so systemd-networkd calls the link "unmanaged" and never brings it up (found on a
+# real Debian 12 cloud image). Remove exactly that shape: the interface key (eth0:) then matches by name.
+# `match:` is only deleted together with a `macaddress:` line directly under it; nothing else is touched.
+SED_NETPLAN_EXPR='/^[[:space:]]*match:[[:space:]]*$/{N;/\n[[:space:]]*macaddress:[[:space:]]*"?[0-9A-Fa-f:]+"?[[:space:]]*$/d};/^[[:space:]]*set-name:[[:space:]]*"?[A-Za-z0-9_.-]+"?[[:space:]]*$/d'
+
 # The one fstab edit: comment out the lines that name the VM's disks. Everything else is untouched.
 SED_FSTAB_EXPR='/^[[:space:]]*(#|$)/!{/^[[:space:]]*(UUID=|LABEL=|PARTUUID=|PARTLABEL=|\/dev\/)/s/^/#vm2lxc# /}'
 
@@ -377,14 +383,15 @@ hc_blkid() {
 
 # The edits made to the container's root filesystem. Every path is under OUR container's rootfs and
 # was resolved chroot-style by the caller; the tools and their flags are fixed.
-#   sed -i -E <the fstab expression> <file>
+#   sed -i -E <the fstab or the netplan expression> <file>
 #   cp -p --remove-destination <file> <file>.vm2lxc-orig
 #   touch <file>         ln -sfn /dev/null <file>
 hc_ctedit() {
   local tool=$1 ok=0
   shift
   case $tool in
-    sed) [[ $# -eq 4 && $1 == -i && $2 == -E && $3 == "$SED_FSTAB_EXPR" ]] && hc_under_ctroot "$4" && ok=1 ;;
+    sed) [[ $# -eq 4 && $1 == -i && $2 == -E && ($3 == "$SED_FSTAB_EXPR" || $3 == "$SED_NETPLAN_EXPR") ]] &&
+      hc_under_ctroot "$4" && ok=1 ;;
     cp) [[ $# -eq 4 && $1 == -p && $2 == --remove-destination && $4 == "$3.vm2lxc-orig" ]] &&
       hc_under_ctroot "$3" && hc_under_ctroot "$4" && ok=1 ;;
     touch) [[ $# -eq 1 ]] && hc_under_ctroot "$1" && ok=1 ;;
@@ -1198,8 +1205,25 @@ act_do_ct_fixup() { # <ctid> <priv> <idmap base>
       return 1
     fi
   fi
+  # netplan files written by cloud-init: see SED_NETPLAN_EXPR. Each file is backed up first.
+  if gfs_is_dir "$root" /etc/netplan; then
+    local f
+    while IFS= read -r f; do
+      [[ $f =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] || continue
+      gfs_resolve "$root" "/etc/netplan/$f" || continue
+      [[ -f $GFS_PATH ]] || continue
+      p=$GFS_PATH
+      ct_do "$priv" "$base" cp -p --remove-destination "$p" "$p.vm2lxc-orig" || return $?
+      ct_do "$priv" "$base" sed -i -E "$SED_NETPLAN_EXPR" "$p" || return $?
+    done < <(gfs_entries "$root" /etc/netplan)
+  fi
+  # Units that cannot work in an unprivileged container: the console that does not exist, and the kernel
+  # filesystems a container may not mount (they only show up as failed units).
   if gfs_is_dir "$root" /etc/systemd/system; then
-    ct_do "$priv" "$base" ln -sfn /dev/null "$GFS_PATH/serial-getty@ttyS0.service" || return $?
+    local sys=$GFS_PATH u
+    for u in serial-getty@ttyS0.service sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount; do
+      ct_do "$priv" "$base" ln -sfn /dev/null "$sys/$u" || return $?
+    done
   fi
 }
 act_undo_ct_fixup() { return 0; } # the edits live in the container, which is destroyed with it

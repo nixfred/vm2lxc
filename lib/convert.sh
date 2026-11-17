@@ -94,6 +94,16 @@ conv_guest_ifnames() {
   done
 }
 
+# conv_netplan_mac_match <root>: does any netplan file match the NIC by MAC address?
+conv_netplan_mac_match() {
+  local f
+  while IFS= read -r f; do
+    [[ $f =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] || continue
+    gfs_cat "$1" "/etc/netplan/$f" 2>/dev/null | grep -qE '^[[:space:]]*macaddress:' && return 0
+  done < <(gfs_entries "$1" /etc/netplan 2>/dev/null)
+  return 1
+}
+
 # conv_fstab_mountpoint <root> <uuid> <label>: where the guest's fstab mounts the filesystem with that id
 conv_fstab_mountpoint() {
   local root=$1 uuid=$2 label=$3 line dev mp
@@ -296,6 +306,9 @@ conv_decide() {
     plan_mp+=("$mpn|$mnt|$path")
   done
 
+  if conv_netplan_mac_match "$GUEST_ROOT"; then
+    CONV_NOTES+=("the guest's netplan matches the NIC by MAC address (cloud-init does this); a container's veth has no permanent MAC, so the copy's netplan is changed to match by interface name (originals kept as *.vm2lxc-orig)")
+  fi
   conv_tags_and_desc "$vmid" "$run"
   CONV_OPTS=(--hostname "$CONV_HOSTNAME" --memory "$CONV_MEM" --cores "$CONV_CORES" --rootfs "$CONV_BOOT_STORAGE:$CONV_BOOT_GB")
   CONV_OPTS+=("${opts_mp[@]}" "${opts_net[@]}")
@@ -348,7 +361,8 @@ conv_print_phase_b() {
   printf '  - archive the guest filesystem(s) under %s/<run>/\n' "$(stage_root)"
   printf '  - pct create %s from that archive, tagged vm2lxc-<run>, stopped, not starting at boot\n' "$CONV_CTID"
   printf '  - in the container copy only: comment out the fstab lines that name the VM'"'"'s disks (a backup stays),\n'
-  printf '    disable cloud-init, mask the serial getty; copy the extra disks into their mount points\n'
+  printf '    disable cloud-init, make netplan match the NIC by name instead of by MAC, mask the serial getty and\n'
+  printf '    the kernel mounts a container cannot have; copy the extra disks into their mount points\n'
   if ((OPT_START)); then
     printf '  - start the container (the cutover: the VM is already stopped)\n'
   else
@@ -504,6 +518,13 @@ cmd_undo() {
     die "$EXIT_NOINPUT" "no open vm2lxc conversion created container $ct (nothing to undo here)"
   journal_load "$run" || die "$EXIT_NOINPUT" "the journal of run $run cannot be read"
   printf '%svm2lxc undo %s%s  (run %s, VM %s)\n\n' "$C_BLD" "$ct" "$C_RST" "$run" "$RUN_VMID"
+  local was=0 a1 a2 a3
+  for ((n = 1; n <= JL_N; n++)); do
+    if [[ ${JL_KIND[$n]:-} == vm-stop ]]; then
+      IFS=$'\t' read -r a1 a2 a3 <<<"${JL_ARGS[$n]}"
+      [[ $a2 == 1 ]] && was=1
+    fi
+  done
   printf 'What undo does, newest step first:\n'
   for ((n = JL_N; n >= 1; n--)); do
     kind=${JL_KIND[$n]:-}
@@ -513,7 +534,13 @@ cmd_undo() {
       ct-start) printf '  - stop container %s\n' "$ct" ;;
       ct-create) printf '  - DESTROY container %s and its volumes (only if it carries the tag vm2lxc-%s)\n' "$ct" "$run" ;;
       vm-onboot) printf '  - restore the VM'"'"'s autostart flag\n' ;;
-      vm-stop) printf '  - start VM %s again, if it was running before (never while the container runs)\n' "$RUN_VMID" ;;
+      vm-stop)
+        if ((was)); then
+          printf '  - start VM %s again (it was running before the conversion; never while the container runs)\n' "$RUN_VMID"
+        else
+          printf '  - leave VM %s stopped (it was already stopped before the conversion)\n' "$RUN_VMID"
+        fi
+        ;;
     esac
   done
   printf '\nEverything written inside the container since the conversion is LOST: undo does not copy it back.\n'
@@ -528,5 +555,9 @@ cmd_undo() {
   if ! run_teardown "$run" 1; then
     die "$EXIT_REFUSED" "undo is INCOMPLETE: nothing was lost. Fix the cause above and run it again."
   fi
-  printf '\nUndone. Container %s is gone and VM %s is back.\n' "$ct" "$RUN_VMID"
+  if ((was)); then
+    printf '\nUndone. Container %s is gone and VM %s is running again.\n' "$ct" "$RUN_VMID"
+  else
+    printf '\nUndone. Container %s is gone. VM %s is as it was before the conversion (it was stopped).\n' "$ct" "$RUN_VMID"
+  fi
 }
