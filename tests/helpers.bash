@@ -120,17 +120,18 @@ make_rrd() {
 # Everything the snapshot layer touches lives in a throwaway directory per test.
 setup_fake_host() {
   local n fb="$BATS_TEST_TMPDIR/fakebin"
-  load_libs common pve qmconf storage findings checks_cfg checks_guest sizing snapplan hostexec inspect
+  load_libs common pve qmconf storage findings checks_cfg guestfs checks_guest sizing snapplan hostexec inspect convert
   mkdir -p "$fb"
-  for n in zfs lvs lvcreate lvchange lvremove losetup lsblk mount umount mountpoint udevadm; do
+  for n in zfs lvs lvcreate lvchange lvremove losetup lsblk mount umount mountpoint udevadm qm pct blkid lxc-usernsexec; do
     ln -s "$REPO_ROOT/tests/stubs/fakehost.sh" "$fb/$n"
   done
   export PATH="$fb:$PATH"
   export FAKE_STATE="$BATS_TEST_TMPDIR/fake"
   export VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/state"
   export VM2LXC_RUN_ROOT="$BATS_TEST_TMPDIR/run"
+  export VM2LXC_STAGE_ROOT="$BATS_TEST_TMPDIR/stage" VM2LXC_CT_ROOT="$BATS_TEST_TMPDIR/lxc"
   export VM2LXC_WAIT_SLEEP=0 VM2LXC_WAIT_TRIES=2
-  mkdir -p "$FAKE_STATE/zfs" "$FAKE_STATE/lvm" "$FAKE_STATE/loops" "$FAKE_STATE/lsblk"
+  mkdir -p "$FAKE_STATE/zfs" "$FAKE_STATE/lvm" "$FAKE_STATE/loops" "$FAKE_STATE/lsblk" "$FAKE_STATE/blkid" "$FAKE_STATE/vm" "$FAKE_STATE/ct" "$FAKE_STATE/guest"
   unset FAKE_FAIL FAKE_SLEEP_LSBLK
 }
 

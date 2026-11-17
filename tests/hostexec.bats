@@ -946,3 +946,210 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   VM2LXC_TEST_EXEC=1 VM2LXC_RUN_ROOT=/tmp/x/y run run_root
   [ "$output" = /tmp/x/y ]
 }
+
+# --- the conversion allowlist (convert/undo): every validator refuses the near-miss ------------------------------
+
+conv_bind() { # bind the allowlist to a run, a VM and a container, as cmd_convert does
+  RUN_ID=rtest01 RUN_VMID=100 CT_ID=900 CT_MAPBASE=100000
+}
+ST="/stage-placeholder"
+
+@test "allowlist qm: only this run's VM, only status|start|shutdown --timeout N|set --onboot 0|1" {
+  conv_bind
+  refused qm status 101
+  refused qm shutdown 101 --timeout 90
+  refused qm stop 100
+  refused qm destroy 100
+  refused qm shutdown 100
+  refused qm shutdown 100 --timeout 9999
+  refused qm shutdown 100 --timeout 90 --forceStop 1
+  refused qm set 100 --onboot 2
+  refused qm set 100 --memory 1
+  refused qm set 100 --delete scsi0
+  refused qm start 100 --skiplock
+  run hc_qm status 100
+  [ "$status" -eq 0 ]
+  run hc_qm shutdown 100 --timeout 90
+  [ "$status" -eq 0 ]
+  run hc_qm set 100 --onboot 0
+  [ "$status" -eq 0 ]
+}
+
+@test "allowlist pct: only this run's container; no flags beyond the ones named; destroy needs --purge and nothing else" {
+  conv_bind
+  refused pct status 901
+  refused pct destroy 901 --purge
+  refused pct destroy 900
+  refused pct destroy 900 --purge --force
+  refused pct destroy 900 --force
+  refused pct exec 900 -- id
+  refused pct enter 900
+  refused pct push 900 /etc/shadow /x
+  refused pct set 900 --onboot 1
+  refused pct shutdown 900 --timeout 9999
+  refused pct start 900 --skiplock
+  refused pct status 0900
+  for sub in status config mount unmount start stop; do
+    run hc_pct "$sub" 900
+    [ "$status" -eq 0 ] || { echo "pct $sub 900 was refused"; return 1; }
+  done
+  run hc_pct destroy 900 --purge
+  [ "$status" -eq 0 ]
+}
+
+@test "allowlist pct create: this run's staged archive only; every option from a fixed set with its own pattern" {
+  conv_bind
+  local ar="$VM2LXC_STAGE_ROOT/rtest01/rootfs.tar" good=(--hostname web --memory 1024 --cores 2 --rootfs local-lvm:10
+    --net0 name=ens18,bridge=vmbr0,hwaddr=BC:24:11:AA:BB:64,type=veth,firewall=1 --unprivileged 1 --ostype unmanaged
+    --onboot 0 --start 0 --arch amd64 --features nesting=1 --tags 'vm2lxc;vm2lxc-rtest01' --description 'vm2lxc:run=rtest01 converted from VM 100 (web)')
+  run hc_pct create 900 "$ar" "${good[@]}"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  run hc_pct create 900 "$ar" --mp0 'local-lvm:200,mp=/srv/data'
+  [ "$status" -eq 0 ]
+  refused pct create 900 /etc/passwd "${good[@]}"
+  refused pct create 900 "$VM2LXC_STAGE_ROOT/otherrun/rootfs.tar" "${good[@]}"
+  refused pct create 900 "$VM2LXC_STAGE_ROOT/rtest01/rootfs.tar.zst" "${good[@]}"
+  refused pct create 900 "$VM2LXC_STAGE_ROOT/rtest01/../../etc/rootfs.tar" "${good[@]}"
+  refused pct create 900 "$ar" --hostname 'a b'
+  refused pct create 900 "$ar" --hostname '-x'
+  refused pct create 900 "$ar" --memory 1
+  refused pct create 900 "$ar" --memory abc
+  refused pct create 900 "$ar" --rootfs '../x:10'
+  refused pct create 900 "$ar" --rootfs 'local-lvm:10;rm -rf /'
+  refused pct create 900 "$ar" --mp0 'local-lvm:10,mp=/a/../etc'
+  refused pct create 900 "$ar" --mp0 'local-lvm:10,mp=relative'
+  refused pct create 900 "$ar" --mp0 'local-lvm:10,mp=/x,backup=1,acl=1'
+  refused pct create 900 "$ar" --net0 'name=eth0,bridge=vmbr0,hwaddr=nonsense,type=veth'
+  refused pct create 900 "$ar" --net0 'name=eth0,bridge=vmbr0,hwaddr=BC:24:11:AA:BB:64,type=veth,rate=1,trunks=1'
+  refused pct create 900 "$ar" --onboot 1
+  refused pct create 900 "$ar" --start 1
+  refused pct create 900 "$ar" --arch arm64
+  refused pct create 900 "$ar" --features 'nesting=1,mount=nfs'
+  refused pct create 900 "$ar" --features 'privileged=1'
+  refused pct create 900 "$ar" --password hunter2
+  refused pct create 900 "$ar" --ssh-public-keys /root/.ssh/authorized_keys
+  refused pct create 900 "$ar" --lxc.cgroup2.devices.allow 'a'
+  refused pct create 900 "$ar" --unprivileged 2
+  refused pct create 900 "$ar" --ostype 'debian;id'
+  refused pct create 900 "$ar" --tags 'a b'
+  refused pct create 900 "$ar" --description 'x$(id)'
+  refused pct create 900 "$ar" --hostname
+}
+
+@test "allowlist tar: the create form reads a mounted guest into a staged tarball; the extract form writes only inside our container" {
+  conv_bind
+  local st="$VM2LXC_STAGE_ROOT/rtest01" rr="$VM2LXC_RUN_ROOT/rtest01/scsi0/p1" ct
+  ct=$(ct_root 900)
+  local c=(--numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C "$rr" .)
+  run hc_tar "${c[@]}"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  run hc_tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$ct/srv/data"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  refused tar -cpf "$st/rootfs.tar" -C "$rr" .
+  refused tar --numeric-owner --xattrs --acls --one-file-system -cpf /tmp/out.tar -C "$rr" .
+  refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C / .
+  refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C /etc .
+  refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C "$rr" . /etc/shadow
+  refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" --to-command=id -C "$rr" .
+  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C /
+  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C /etc
+  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$ct/../../etc"
+  refused tar --numeric-owner --xattrs --acls -xpf /tmp/evil.tar -C "$ct/srv"
+  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$VM2LXC_CT_ROOT/901/rootfs/srv" # another container
+  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" --absolute-names -C "$ct/srv"
+  refused tar -xpf "$st/mp0.tar" -C "$ct/srv"
+}
+
+@test "allowlist rm and rmdir: only this run's staged tarballs, never a directory or a glob; the staging dir only when empty-safe" {
+  conv_bind
+  local st="$VM2LXC_STAGE_ROOT/rtest01"
+  run hc_under_stage "$st/rootfs.tar"
+  [ "$status" -eq 0 ]
+  run hc_under_stage "$st/mp3.tar"
+  [ "$status" -eq 0 ]
+  refused rm -f -- "$st/rootfs.tar.bak"
+  refused rm -rf "$st"
+  refused rm -f "$st/rootfs.tar"
+  refused rm -f -- "$st"
+  refused rm -f -- "$st/*.tar"
+  refused rm -f -- "$st/../rootfs.tar"
+  refused rm -f -- "$VM2LXC_STAGE_ROOT/other/rootfs.tar"
+  refused rm -f -- /etc/passwd
+  refused rm -f -- "$st/rootfs.tar" /etc/passwd
+  refused rmdir /var/tmp
+  refused rmdir "$VM2LXC_STAGE_ROOT/other"
+}
+
+@test "allowlist container edits: only the fstab expression, the .vm2lxc-orig backup, one touch, one /dev/null mask, all inside our rootfs" {
+  conv_bind
+  local ct
+  ct=$(ct_root 900)
+  run hc_ctedit sed -i -E "$SED_FSTAB_EXPR" "$ct/etc/fstab"
+  [ "$status" -eq 0 ]
+  run hc_ctedit cp -p --remove-destination "$ct/etc/fstab" "$ct/etc/fstab.vm2lxc-orig"
+  [ "$status" -eq 0 ]
+  run hc_ctedit touch "$ct/etc/cloud/cloud-init.disabled"
+  [ "$status" -eq 0 ]
+  run hc_ctedit ln -sfn /dev/null "$ct/etc/systemd/system/serial-getty@ttyS0.service"
+  [ "$status" -eq 0 ]
+  refused sed -i -E 's/.*/pwned/' "$ct/etc/fstab"
+  refused sed -i "$SED_FSTAB_EXPR" "$ct/etc/fstab"
+  refused sed -i -E "$SED_FSTAB_EXPR" /etc/fstab
+  refused sed -i -E "$SED_FSTAB_EXPR" "$ct/../../etc/fstab"
+  refused sed -i -E "$SED_FSTAB_EXPR" "$VM2LXC_CT_ROOT/901/rootfs/etc/fstab"
+  refused sed -n -E "$SED_FSTAB_EXPR" "$ct/etc/fstab"
+  refused cp -p --remove-destination "$ct/etc/fstab" "$ct/etc/shadow"
+  refused cp -p --remove-destination /etc/shadow "$ct/etc/shadow.vm2lxc-orig"
+  refused cp "$ct/etc/fstab" "$ct/etc/fstab.vm2lxc-orig"
+  refused touch /etc/cloud/cloud-init.disabled
+  refused touch "$ct/etc/passwd" "/etc/passwd"
+  refused touch -h "$ct/etc/cloud/cloud-init.disabled"
+  refused ln -sfn /etc/shadow "$ct/etc/systemd/system/x.service"
+  refused ln -sfn /dev/null "$ct/etc/passwd"
+  refused ln -sfn /dev/null /etc/systemd/system/x.service
+  refused ln -s /dev/null "$ct/etc/systemd/system/x.service"
+}
+
+@test "allowlist lxc-usernsexec: only the container's own id map, and only the edits and the extract above" {
+  conv_bind
+  local ct st="$VM2LXC_STAGE_ROOT/rtest01"
+  ct=$(ct_root 900)
+  run hc_usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- touch "$ct/etc/cloud/cloud-init.disabled"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  run hc_usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$ct/srv"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  refused lxc-usernsexec -m u:0:0:65536 -m g:0:0:65536 -- touch "$ct/etc/x" # the real root's own ids
+  refused lxc-usernsexec -m u:0:100000:4294967295 -m g:0:100000:65536 -- touch "$ct/etc/x"
+  refused lxc-usernsexec -m u:0:100000:65536 -m g:0:200000:65536 -- touch "$ct/etc/x"
+  refused lxc-usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- sh -c id
+  refused lxc-usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- chroot "$ct" /bin/sh
+  refused lxc-usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- cat /etc/shadow
+  refused lxc-usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- touch /etc/passwd
+  refused lxc-usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C / .
+  refused lxc-usernsexec -m u:0:100000:65536 -- touch "$ct/etc/x"
+  refused lxc-usernsexec -m u:0:100000:65536 -m g:0:100000:65536 touch "$ct/etc/x"
+}
+
+@test "allowlist blkid: only the filesystem id of one of our own devices" {
+  conv_bind
+  OURS_LOOPS=(/dev/loop3)
+  run hc_blkid -s UUID -o value /dev/loop3
+  [ "$status" -eq 0 ]
+  refused blkid -s UUID -o value /dev/sda1
+  refused blkid -s UUID -o value /dev/loop9
+  refused blkid -s UUID -o value /dev/zvol/rpool/data/vm-100-disk-0
+  refused blkid -s TYPE -o value /dev/loop3
+  refused blkid -p /dev/loop3
+  refused blkid -s UUID -o value
+  refused blkid /dev/loop3
+}
+
+@test "allowlist mountpoint: a mount point inside OUR container is allowed to be tested, nothing else outside the run root" {
+  conv_bind
+  run hc_under_ctroot "$(ct_root 900)/srv/data"
+  [ "$status" -eq 0 ]
+  refused mountpoint -q /
+  refused mountpoint -q /proc
+  refused mountpoint -q "$(ct_root 901)/srv"
+  refused mountpoint -q "$(ct_root 900)/../../etc"
+}

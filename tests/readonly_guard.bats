@@ -33,9 +33,10 @@ code_lines() {
   [ -z "$bad" ] || { echo "mutating host verbs in the source:"; echo "$bad"; return 1; }
 }
 
-@test "static: pct is never mentioned in code (no container is created in this slice)" {
-  run bash -c "grep -hvE '^[[:space:]]*#' '$REPO_ROOT/vm2lxc' '$REPO_ROOT'/lib/*.sh | grep -nE '\\bpct\\b'"
-  [ "$status" -eq 1 ]
+@test "static: pct and qm are never run in command position outside lib/hostexec.sh (a container is only created through host_cmd)" {
+  local hits
+  hits=$(code_lines | grep -nE "(^|[|&;({\`]|\\\$\\(|[[:space:]](then|do|else|elif))[[:space:]]*(pct|lxc-usernsexec|qm[[:space:]]+(set|start|stop|shutdown|create|destroy))([[:space:]]|\$)" || true)
+  [ -z "$hits" ] || { echo "$hits"; return 1; }
 }
 
 @test "static: no mutating or out-of-scope tool is run in command position" {
@@ -71,10 +72,10 @@ code_lines() {
   [ -z "$hits" ] || { echo "$hits"; return 1; }
 }
 
-@test "static: only inspect.sh and the entry script may call into the executor" {
+@test "static: only convert.sh, inspect.sh and the entry script may call into the executor" {
   local hits
   hits=$(grep -lE 'run_apply|run_teardown|lock_acquire' "$REPO_ROOT"/lib/*.sh "$REPO_ROOT/vm2lxc" | xargs -n1 basename | sort | tr '\n' ' ')
-  [ "$hits" = "hostexec.sh inspect.sh " ] || { echo "callers: $hits"; return 1; }
+  [ "$hits" = "convert.sh hostexec.sh inspect.sh " ] || { echo "callers: $hits"; return 1; }
 }
 
 # --- dynamic ---------------------------------------------------------------------------
@@ -176,14 +177,24 @@ live() {
   grep -q "pvesh get /nodes/$(hostname -s)/qemu/100/rrddata" "$STUB_LOG"
 }
 
-@test "dynamic: convert and undo (stubs) and cleanup (nothing to do) make zero host calls" {
-  live convert 100
-  [ "$status" -eq 70 ]
-  live undo 100
-  [ "$status" -eq 70 ]
+@test "dynamic: undo and cleanup with nothing to do make zero host calls" {
+  VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/nostate" live undo 900
+  [ "$status" -eq 66 ]
   VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/nostate" live cleanup
   [ "$status" -eq 0 ]
   [ ! -s "$STUB_LOG" ]
+}
+
+@test "dynamic: convert in plan mode issues only allowed reads, in live mode, and no mutating tool (qm, pct, tar, zfs ... never called)" {
+  live --node pve-test convert 100 --ctid 900
+  [ "$status" -eq 0 ]
+  live --node pve-test convert 101 --ctid 901 --dry-run --yes
+  [ "$status" -eq 0 ]
+  refute_log '^REFUSED'
+  local bad
+  bad=$(grep -vE '^(pveversion |pvesm status|pvesm path [A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+|qm config [0-9]+|pvesh get /nodes/pve-test/qemu --output-format json|pvesh get /cluster/resources --type vm --output-format json)$' "$STUB_LOG" || true)
+  [ -z "$bad" ] || { echo "unexpected calls:"; echo "$bad"; return 1; }
+  [[ $output == *"Nothing was executed"* ]]
 }
 
 @test "dynamic: inspect in plan mode issues only allowed reads, in live mode, and no mutating tool" {

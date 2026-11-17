@@ -88,6 +88,30 @@ pve_qm_config() {
   pve_read "qm-config-$1.txt" qm config "$1"
 }
 
+# pve_id_in_use <id>: is that id already a VM or a container on this host (ids share one namespace)?
+pve_id_in_use() {
+  local out
+  if pve_fixture_mode; then
+    if [[ -r $VM2LXC_FIXTURE_DIR/cluster-resources.json ]]; then
+      out=$(<"$VM2LXC_FIXTURE_DIR/cluster-resources.json")
+    else
+      out=$(pve_list_vms) || return 1
+    fi
+  else
+    out=$(pvesh get /cluster/resources --type vm --output-format json </dev/null) || return 1
+  fi
+  jq -e --argjson id "$1" 'any(.[]; .vmid == $id)' <<<"$out" >/dev/null
+}
+
+# pve_nextid: the next free VM/CT id (live: the cluster's own answer)
+pve_nextid() {
+  if pve_fixture_mode; then
+    if [[ -r $VM2LXC_FIXTURE_DIR/nextid.txt ]]; then cat "$VM2LXC_FIXTURE_DIR/nextid.txt"; else printf '9100'; fi
+  else
+    pvesh get /cluster/nextid </dev/null
+  fi
+}
+
 # pve_volume_path <storage:volume>: where the volume lives on this host (`pvesm path`).
 # A zfspool volume is /dev/zvol/<pool/dataset>; an lvmthin volume is /dev/<vg>/<lv>.
 pve_volume_path() {

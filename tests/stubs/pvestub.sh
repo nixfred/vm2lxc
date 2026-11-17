@@ -53,11 +53,19 @@ case $name in
           [[ $2 == json ]] || refuse "get $path --output-format $2"
           shift 2
           ;;
+        --type)
+          [[ $2 == vm ]] || refuse "get $path --type $2"
+          shift 2
+          ;;
         *) refuse "get $path $*" ;;
       esac
     done
     if [[ $path =~ ^/nodes/[A-Za-z0-9-]+/qemu$ ]]; then
       cat "$STUB_FIXTURES/qemu-list.json"
+    elif [[ $path == /cluster/resources ]]; then
+      cat "$STUB_FIXTURES/qemu-list.json" # every vmid on the host: enough for the id-in-use check
+    elif [[ $path == /cluster/nextid ]]; then
+      echo 9100
     elif [[ $path =~ ^/nodes/[A-Za-z0-9-]+/qemu/([0-9]+)/rrddata$ && -n $tf ]]; then
       cat "$STUB_FIXTURES/rrddata-${BASH_REMATCH[1]}-$tf.json" || exit 2
     else

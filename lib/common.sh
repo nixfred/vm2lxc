@@ -27,6 +27,12 @@ OPT_ANSWERS=""
 OPT_NODE=""
 OPT_HELP=0
 OPT_VERSION=0
+OPT_CTID=""        # convert: the container id (default: the next free one)
+OPT_MEMORY=""
+OPT_CORES=""
+OPT_HOSTNAME=""
+OPT_PRIVILEGED=0  # convert: opt in to a privileged container (D5)
+OPT_START=0       # convert: start the container when done (the cutover)
 POSITIONAL=()
 
 # sanitize_text <text>: neutralise everything a terminal would act on; the result is in REPLY (no
@@ -74,7 +80,7 @@ vmid_valid() {
 
 usage() {
   cat <<EOF
-vm2lxc ${VM2LXC_VERSION}: convert a Proxmox QEMU VM into an LXC container (WORK IN PROGRESS)
+vm2lxc ${VM2LXC_VERSION}: convert a Proxmox QEMU VM into an LXC container, safely (ALPHA)
 
 Usage: vm2lxc [options] <command> [args]
 
@@ -85,12 +91,21 @@ Commands:
                      snapshots; with --yes, do it, look inside, and tear it all down
   cleanup            tear down anything a crashed inspect left behind (lists first,
                      removes with --yes). Only touches objects in vm2lxc's own journals
-  convert <vmid>     not implemented yet
-  undo <ct>          not implemented yet
+  convert <vmid>     show the plan to turn the VM into a NEW container; with --yes, do it:
+                     stop the VM (stop-and-copy), snapshot, copy, create the container (stopped
+                     unless --start). The VM and its disks are kept, never deleted
+  undo <ct>          reverse a conversion: destroy the container and start the VM again
+                     (shows what it will do; --yes to do it)
 
 Options:
-  --yes              really execute (inspect, cleanup); without it they only show a plan
-  --answers FILE     read prompt answers from FILE (for convert; accepted, unused so far)
+  --yes              really execute (inspect, convert, undo, cleanup); without it they only show a plan
+  --ctid N           convert: the container id to create (default: the next free id)
+  --start            convert: start the container when done (the cutover)
+  --privileged       convert: create a privileged container (default: unprivileged)
+  --memory MB        convert: container RAM (default: the VM's)
+  --cores N          convert: container cores (default: the VM's)
+  --hostname NAME    convert: container hostname (default: the VM's name)
+  --answers FILE     read prompt answers from FILE (accepted, unused so far)
   --dry-run          show what would happen (preflight and scan are always read-only)
   --no-tui           plain prompts, no whiptail (accepted, unused so far)
   --node NAME        PVE node name (default: this host's short hostname)
@@ -99,10 +114,11 @@ Options:
 
 Exit codes: 0 green, 10 yellow, 20 red (preflight only); 64 bad usage;
 65 the VM's disks cannot be planned; 66 VM not found; 69 environment problem (not root, not PVE, missing tool);
-70 not implemented yet; 77 a safety rail refused an action.
+77 a safety rail refused an action (or a RED verdict stopped convert).
 
-Run as root on a Proxmox VE 8.x/9.x node. preflight and scan only read. inspect and
-cleanup create and remove storage snapshots, but only with --yes, and only objects
-named vm2lxc-... that they recorded in their own journal.
+Run as root on a Proxmox VE 8.x/9.x node. preflight and scan only read. inspect, convert,
+undo and cleanup change things only with --yes, and only objects they recorded in their own
+journal: snapshots named vm2lxc-..., and the one container convert creates (tagged
+vm2lxc-<run>). A VM's disks are never written.
 EOF
 }

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # A STATEFUL fake of the storage tools the snapshot layer drives: zfs, lvs, lvcreate,
-# lvchange, lvremove, losetup, lsblk, mount, umount, mountpoint, udevadm.
+# lvchange, lvremove, losetup, lsblk, mount, umount, mountpoint, udevadm, and for convert/undo
+# qm, pct, blkid and lxc-usernsexec. (tar, sed, cp, touch and ln are the REAL tools: they run against
+# the fake guest and the fake container root, so the fix-ups and the staged archive are really exercised.)
 # Installed as symlinks with those names (see tests/hostexec.bats). It remembers what
 # exists under $FAKE_STATE, so a test can assert "the source is untouched", "nothing of
 # ours is left" and "things were destroyed in the right order" (calls.log keeps the order).
@@ -10,6 +12,10 @@
 #                key = tool, or zfs.<verb>, or losetup.attach / .detach / .list.
 #   FAKE_ZD_MAP  comma list clone=/dev/zdN: lsblk then reports the KERNEL name of that zvol, as the
 #                real tool does, instead of the /dev/zvol/<clone> path it was given.
+#   VM2LXC_CT_ROOT  where the fake container roots live (the tool's own test seam; required by pct)
+#   $FAKE_STATE/guest/<enc device>  a directory copied into the mount point when that device is mounted
+#   $FAKE_STATE/vm/<id>.state       running|stopped (default running); .onboot is written by `qm set`
+#   $FAKE_STATE/blkid/<enc device>.UUID|.LABEL  what blkid prints for a device
 #   FAKE_SLEEP_LSBLK  seconds to sleep inside lsblk (so a test can signal a running inspect)
 #   FAKE_SLEEP_DESTROY seconds to sleep inside `zfs destroy` (a window to signal a running teardown)
 #
@@ -19,7 +25,14 @@
 
 name=${0##*/}
 S=${FAKE_STATE:?FAKE_STATE not set}
-mkdir -p "$S/zfs" "$S/lvm" "$S/loops" "$S/lsblk" "$S/count"
+mkdir -p "$S/zfs" "$S/lvm" "$S/loops" "$S/lsblk" "$S/count" "$S/vm" "$S/ct" "$S/blkid"
+
+# remove a directory tree of the fake (modes made writable first)
+wipe() {
+  [[ -d $1 ]] || return 0
+  chmod -R u+rwX "$1" 2>/dev/null || true
+  find "$1" -depth -delete
+}
 printf '%s %s\n' "$name" "$*" >>"$S/calls.log"
 
 # A child must never inherit the run lock (the executor closes it before every exec).
@@ -369,6 +382,8 @@ case $name in
         [[ -n $suf && $dev == *"$suf" ]] && mkdir -p "$mnt/etc" "$mnt/usr" && : >"$mnt/etc/os-release"
       done <"$S/rootfs-suffixes"
     fi
+    tpl="$S/guest/$(enc "$dev")"
+    if [[ -d $tpl ]]; then cp -a "$tpl/." "$mnt/"; fi
     true
     ;;
   umount)
@@ -383,7 +398,7 @@ case $name in
     }
     grep -v "|$1|" "$S/mounts" >"$S/mounts.new" || true
     mv "$S/mounts.new" "$S/mounts"
-    rm -rf "${1:?}/etc" "${1:?}/usr"
+    find "${1:?}" -mindepth 1 -depth -delete 2>/dev/null || { chmod -R u+rwX "$1"; find "${1:?}" -mindepth 1 -depth -delete; }
     echo "UMOUNTED $1" >>"$S/events.log"
     ;;
   mountpoint)
@@ -398,6 +413,120 @@ case $name in
     exit 1
     ;;
   udevadm) exit 0 ;;
+  qm)
+    sub=$1 id=$2
+    case $sub in
+      status)
+        maybe_fail qm.status
+        echo "status: $(cat "$S/vm/$id.state" 2>/dev/null || echo running)"
+        ;;
+      shutdown)
+        maybe_fail qm.shutdown
+        [[ $3 == --timeout && $4 =~ ^[0-9]+$ ]] || exit 2
+        echo stopped >"$S/vm/$id.state"
+        echo "VMSTOPPED $id" >>"$S/events.log"
+        ;;
+      start)
+        maybe_fail qm.start
+        echo running >"$S/vm/$id.state"
+        echo "VMSTARTED $id" >>"$S/events.log"
+        ;;
+      set)
+        maybe_fail qm.set
+        [[ $3 == --onboot && $4 =~ ^[01]$ ]] || exit 2
+        echo "$4" >"$S/vm/$id.onboot"
+        echo "VMONBOOT $id $4" >>"$S/events.log"
+        ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  pct)
+    sub=$1 id=$2
+    ctd="$S/ct/$id"
+    ctroot="${VM2LXC_CT_ROOT:?VM2LXC_CT_ROOT not set}/$id/rootfs"
+    gone() { echo "Configuration file 'nodes/fake/lxc/$id.conf' does not exist" >&2; exit 2; }
+    case $sub in
+      status)
+        maybe_fail pct.status
+        [[ -f $ctd/conf ]] || gone
+        echo "status: $(cat "$ctd/state")"
+        ;;
+      config)
+        [[ -f $ctd/conf ]] || gone
+        cat "$ctd/conf"
+        ;;
+      create)
+        maybe_fail pct.create
+        tarball=$3
+        shift 3
+        [[ -f $tarball ]] || { echo "pct: archive $tarball not found" >&2; exit 1; }
+        [[ -f $ctd/conf ]] && { echo "CT $id already exists" >&2; exit 255; }
+        mkdir -p "$ctd" "$ctroot"
+        : >"$ctd/conf"
+        while (($#)); do
+          printf '%s: %s\n' "${1#--}" "$2" >>"$ctd/conf"
+          shift 2
+        done
+        tar -xpf "$tarball" -C "$ctroot" --numeric-owner || { echo "pct: extraction failed" >&2; exit 1; }
+        echo stopped >"$ctd/state"
+        echo "CTCREATED $id" >>"$S/events.log"
+        ;;
+      mount)
+        maybe_fail pct.mount
+        [[ -z ${FAKE_SLEEP_PCT_MOUNT:-} ]] || sleep "$FAKE_SLEEP_PCT_MOUNT"
+        [[ -f $ctd/conf ]] || gone
+        while read -r key val; do
+          [[ $key == mp[0-9]*: ]] || continue
+          mp=${val##*mp=}
+          mp=${mp%%,*}
+          mkdir -p "$ctroot$mp"
+          [[ -n ${FAKE_NO_MP_MOUNT:-} ]] || printf 'ctvol|%s|ext4|rw\n' "$ctroot$mp" >>"$S/mounts"
+        done <"$ctd/conf"
+        : >"$ctd/mounted"
+        echo "CTMOUNTED $id" >>"$S/events.log"
+        ;;
+      unmount)
+        [[ -f $ctd/conf ]] || gone
+        if [[ -f $S/mounts ]]; then grep -v "^ctvol|$ctroot" "$S/mounts" >"$S/mounts.new" || true; mv "$S/mounts.new" "$S/mounts"; fi
+        rm -f "$ctd/mounted"
+        echo "CTUNMOUNTED $id" >>"$S/events.log"
+        ;;
+      start)
+        maybe_fail pct.start
+        [[ -f $ctd/conf ]] || gone
+        echo running >"$ctd/state"
+        echo "CTSTARTED $id" >>"$S/events.log"
+        ;;
+      stop)
+        [[ -f $ctd/conf ]] || gone
+        echo stopped >"$ctd/state"
+        echo "CTSTOPPED $id" >>"$S/events.log"
+        ;;
+      destroy)
+        maybe_fail pct.destroy
+        [[ $3 == --purge ]] || exit 2
+        [[ -f $ctd/conf ]] || gone
+        [[ $(cat "$ctd/state") == running ]] && { echo "CT $id is running" >&2; exit 255; }
+        wipe "$ctd"
+        wipe "${VM2LXC_CT_ROOT}/$id"
+        echo "CTDESTROYED $id" >>"$S/events.log"
+        ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  blkid)
+    # blkid -s UUID|LABEL -o value <device>
+    f="$S/blkid/$(enc "$5").$2"
+    [[ -f $f ]] || exit 2
+    cat "$f"
+    ;;
+  lxc-usernsexec)
+    # no user namespace here: check the two maps, then run the command (a real host tool) as the test user
+    [[ $1 == -m && $3 == -m && $5 == -- && $2 == u:0:*:65536 && $4 == g:0:*:65536 ]] || { echo "fake lxc-usernsexec: bad arguments: $*" >&2; exit 2; }
+    echo "USERNSEXEC $2" >>"$S/events.log"
+    shift 5
+    exec "$@"
+    ;;
 
   *)
     echo "fakehost: unknown tool name '$name'" >&2

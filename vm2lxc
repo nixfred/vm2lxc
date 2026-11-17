@@ -38,9 +38,11 @@ source "$VM2LXC_LIBDIR/snapplan.sh"
 source "$VM2LXC_LIBDIR/hostexec.sh"
 # shellcheck source=lib/inspect.sh
 source "$VM2LXC_LIBDIR/inspect.sh"
+# shellcheck source=lib/convert.sh
+source "$VM2LXC_LIBDIR/convert.sh"
 
-# --yes, --answers, --dry-run and --no-tui are accepted now so the CLI is stable, but
-# nothing consumes them until `convert` exists. Scoped disable, not a global one.
+# --answers and --no-tui are accepted so the CLI is stable; nothing consumes them until the interactive
+# convert exists. Scoped disable, not a global one.
 # shellcheck disable=SC2034
 parse_args() {
   POSITIONAL=()
@@ -61,6 +63,22 @@ parse_args() {
         shift
         ;;
       --node=*) OPT_NODE=${1#*=} ;;
+      --ctid | --memory | --cores | --hostname)
+        (($# >= 2)) || die "$EXIT_USAGE" "$1 needs a value"
+        case $1 in
+          --ctid) OPT_CTID=$2 ;;
+          --memory) OPT_MEMORY=$2 ;;
+          --cores) OPT_CORES=$2 ;;
+          --hostname) OPT_HOSTNAME=$2 ;;
+        esac
+        shift
+        ;;
+      --ctid=*) OPT_CTID=${1#*=} ;;
+      --memory=*) OPT_MEMORY=${1#*=} ;;
+      --cores=*) OPT_CORES=${1#*=} ;;
+      --hostname=*) OPT_HOSTNAME=${1#*=} ;;
+      --privileged) OPT_PRIVILEGED=1 ;;
+      --start) OPT_START=1 ;;
       -h | --help) OPT_HELP=1 ;;
       --version) OPT_VERSION=1 ;;
       --)
@@ -73,25 +91,6 @@ parse_args() {
     esac
     shift
   done
-}
-
-# Stubs (convert, undo). They validate their arguments like the real commands
-# will, then say so and stop. They touch nothing: tests/readonly_guard.bats proves it.
-not_implemented() {
-  printf 'vm2lxc %s: not implemented yet (this build only has read-only preflight and scan)\n' "$1" >&2
-  exit "$EXIT_NOTIMPL"
-}
-
-cmd_convert() {
-  (($# == 1)) || die "$EXIT_USAGE" "usage: vm2lxc convert <vmid>"
-  vmid_valid "$1" || die "$EXIT_USAGE" "not a valid VM id: '$1' (expected a number, 100 or higher)"
-  not_implemented convert
-}
-
-cmd_undo() {
-  (($# == 1)) || die "$EXIT_USAGE" "usage: vm2lxc undo <ct>"
-  vmid_valid "$1" || die "$EXIT_USAGE" "not a valid container id: '$1' (expected a number, 100 or higher)"
-  not_implemented undo
 }
 
 main() {

@@ -70,6 +70,49 @@ loop_is_ours() { # /dev/loopN or /dev/loopNpM
 
 # The run root must itself be a sane absolute path at least two levels deep (/run/vm2lxc),
 # never "/" or "/etc": everything we mkdir or mount lives beneath it.
+# --- conversion roots (convert/undo) ---------------------------------------------------------------
+# Where the staged tarballs live and where Proxmox mounts a container's rootfs. Like the run root,
+# both are fixed outside the test seam: an environment variable must not move them.
+RE_CTID='^[1-9][0-9]{2,8}$'
+CT_ID="" CT_PRIV=0 CT_MAPBASE=100000 # the container this run creates, bound into the allowlist
+
+stage_root() {
+  if [[ ${VM2LXC_TEST_EXEC:-} == 1 ]]; then printf '%s' "${VM2LXC_STAGE_ROOT:-/var/tmp/vm2lxc}"; else printf '%s' /var/tmp/vm2lxc; fi
+}
+ct_base() {
+  if [[ ${VM2LXC_TEST_EXEC:-} == 1 ]]; then printf '%s' "${VM2LXC_CT_ROOT:-/var/lib/lxc}"; else printf '%s' /var/lib/lxc; fi
+}
+ct_root() { printf '%s/%s/rootfs' "$(ct_base)" "$1"; }
+
+# the staging directory of THIS run, or a staged tarball inside it
+hc_under_stage() {
+  local rr
+  rr=$(stage_root)
+  [[ $rr =~ ^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$ && -n ${RUN_ID:-} && $1 != *..* ]] || return 1
+  [[ $1 == "$rr/$RUN_ID" ]] && return 0
+  [[ $1 == "$rr/$RUN_ID/"* && ${1#"$rr/$RUN_ID/"} =~ ^(rootfs|mp[0-9]+)\.tar$ ]]
+}
+
+# a path at or below the rootfs of OUR container (never anywhere else, never with '..')
+hc_under_ctroot() {
+  local cr
+  [[ $CT_ID =~ $RE_CTID ]] || return 1
+  cr=$(ct_root "$CT_ID")
+  [[ $1 != *..* && $1 =~ ^[A-Za-z0-9._/@+:=,-]+$ ]] || return 1
+  [[ $1 == "$cr" || $1 == "$cr/"* ]]
+}
+
+RE_CT_NAME='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+RE_STORAGE_SIZE='^[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]{1,6}$'
+RE_CT_MP='^[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]{1,6},mp=/[A-Za-z0-9_./-]*$'
+RE_CT_NET='^name=[A-Za-z0-9_.-]{1,15},bridge=[A-Za-z0-9_.-]{1,15},hwaddr=([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2},type=veth(,tag=[0-9]{1,4})?(,firewall=[01])?$'
+RE_CT_TAGS='^[A-Za-z0-9_.;-]{1,300}$'
+RE_CT_DESC='^[A-Za-z0-9 _.,:=()/-]{1,300}$'
+RE_OSTYPE='^(unmanaged|debian|ubuntu|devuan|alpine|archlinux|fedora|centos|opensuse|gentoo|nixos)$'
+
+# The one fstab edit: comment out the lines that name the VM's disks. Everything else is untouched.
+SED_FSTAB_EXPR='/^[[:space:]]*(#|$)/!{/^[[:space:]]*(UUID=|LABEL=|PARTUUID=|PARTLABEL=|\/dev\/)/s/^/#vm2lxc# /}'
+
 RE_RUN_ROOT='^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$'
 hc_under_runroot() {
   local rr
@@ -230,6 +273,150 @@ hc_losetup() {
   refuse "losetup: only attach/list on our snapshot device, or detach of a loop we own (got: $*)"
 }
 
+# --- validators for the conversion commands ------------------------------------------------------------
+# Every one of them is bound to the VM or container of THIS run (RUN_VMID, CT_ID, RUN_ID): a command
+# naming any other VM or container, or any other path, is refused before it runs.
+
+hc_qm() { # qm status|start <vmid>  |  shutdown <vmid> --timeout N  |  set <vmid> --onboot 0|1
+  local sub=${1:-} id=${2:-}
+  [[ $id =~ ^[0-9]+$ && $id == "${RUN_VMID:-x}" ]] || {
+    refuse "qm: '$id' is not the VM of this run"
+    return
+  }
+  case $sub in
+    status | start) [[ $# -eq 2 ]] || refuse "qm $sub: unexpected arguments" ;;
+    shutdown) [[ $# -eq 4 && $3 == --timeout && $4 =~ ^[0-9]{1,3}$ ]] || refuse "qm shutdown: only '--timeout N'" ;;
+    set) [[ $# -eq 4 && $3 == --onboot && $4 =~ ^[01]$ ]] || refuse "qm set: only '--onboot 0|1'" ;;
+    *) refuse "qm $sub: not on the allowlist" ;;
+  esac
+}
+
+hc_pct() { # pct status|config|mount|unmount|start|stop <ct>  |  shutdown <ct> --timeout N  |  destroy <ct> --purge  |  create ...
+  local sub=${1:-} id=${2:-}
+  [[ $id =~ $RE_CTID && $id == "${CT_ID:-x}" ]] || {
+    refuse "pct: '$id' is not the container of this run"
+    return
+  }
+  case $sub in
+    status | config | mount | unmount | start | stop) [[ $# -eq 2 ]] || refuse "pct $sub: unexpected arguments" ;;
+    shutdown) [[ $# -eq 4 && $3 == --timeout && $4 =~ ^[0-9]{1,3}$ ]] || refuse "pct shutdown: only '--timeout N'" ;;
+    destroy) [[ $# -eq 3 && $3 == --purge ]] || refuse "pct destroy: only '--purge'" ;;
+    create) hc_pct_create "$@" ;;
+    *) refuse "pct $sub: not on the allowlist" ;;
+  esac
+}
+
+# pct create <ct> <staged rootfs tarball> <option> <value> ...: every option from a fixed set, every value
+# against its own pattern. The container is always created stopped, never to start at boot.
+hc_pct_create() {
+  local opt val
+  shift 2 # the sub-command and the (already checked) id
+  if (($# < 1)) || [[ $1 != "$(stage_root)/${RUN_ID:-x}/rootfs.tar" ]] || ! hc_under_stage "$1"; then
+    refuse "pct create: the archive must be this run's staged rootfs.tar"
+    return
+  fi
+  shift
+  (($# % 2 == 0)) || {
+    refuse "pct create: options come in '--name value' pairs"
+    return
+  }
+  while (($# > 0)); do
+    opt=$1 val=$2
+    shift 2
+    case $opt in
+      --hostname) [[ $val =~ $RE_CT_NAME ]] ;;
+      --memory) [[ $val =~ ^[0-9]{2,6}$ ]] ;;
+      --cores) [[ $val =~ ^[0-9]{1,3}$ ]] ;;
+      --swap) [[ $val =~ ^[0-9]{1,6}$ ]] ;;
+      --rootfs) [[ $val =~ $RE_STORAGE_SIZE ]] ;;
+      --mp[0-9] | --mp[0-9][0-9]) [[ $val =~ $RE_CT_MP && $val != *..* ]] ;;
+      --net[0-9] | --net[0-9][0-9]) [[ $val =~ $RE_CT_NET ]] ;;
+      --unprivileged) [[ $val =~ ^[01]$ ]] ;;
+      --ostype) [[ $val =~ $RE_OSTYPE ]] ;;
+      --onboot | --start) [[ $val == 0 ]] ;;
+      --arch) [[ $val == amd64 ]] ;;
+      --features) [[ $val == nesting=1 ]] ;;
+      --tags) [[ $val =~ $RE_CT_TAGS ]] ;;
+      --description) [[ $val =~ $RE_CT_DESC ]] ;;
+      *)
+        refuse "pct create: option '$opt' is not on the allowlist"
+        return
+        ;;
+    esac || {
+      refuse "pct create: the value of $opt is not acceptable"
+      return
+    }
+  done
+}
+
+# tar --numeric-owner --xattrs --acls --one-file-system -cpf <staged tarball> -C <mounted guest fs> .
+#     reads the guest, writes only the staged tarball
+# tar --numeric-owner --xattrs --acls -xpf <staged tarball> -C <a verified mount point in our container>
+hc_tar() {
+  if [[ $# -eq 9 && $1 == --numeric-owner && $2 == --xattrs && $3 == --acls && $4 == --one-file-system &&
+    $5 == -cpf && $7 == -C && $9 == . ]] && hc_under_stage "$6" && [[ $6 == *.tar ]] && hc_under_runroot "$8"; then
+    return 0
+  fi
+  if [[ $# -eq 7 && $1 == --numeric-owner && $2 == --xattrs && $3 == --acls && $4 == -xpf && $6 == -C ]] &&
+    hc_under_stage "$5" && [[ $5 == *.tar ]] && hc_under_ctroot "$7"; then
+    return 0
+  fi
+  refuse "tar: only the staged create form and the verified extract form (got: $*)"
+}
+
+# blkid -s UUID|LABEL -o value <one of our devices>: reads the filesystem id of a mounted clone
+hc_blkid() {
+  if [[ $# -ne 5 || $1 != -s || ! ($2 == UUID || $2 == LABEL) || $3 != -o || $4 != value ]]; then
+    refuse "blkid: only 'blkid -s UUID|LABEL -o value <device>'"
+    return
+  fi
+  if [[ $5 == *..* ]] || ! { [[ $5 =~ $RE_DEV_OURS ]] || loop_is_ours "$5" || zd_is_ours "$5"; }; then
+    refuse "blkid: '$5' is not one of our devices"
+  fi
+}
+
+# The edits made to the container's root filesystem. Every path is under OUR container's rootfs and
+# was resolved chroot-style by the caller; the tools and their flags are fixed.
+#   sed -i -E <the fstab expression> <file>
+#   cp -p --remove-destination <file> <file>.vm2lxc-orig
+#   touch <file>         ln -sfn /dev/null <file>
+hc_ctedit() {
+  local tool=$1 ok=0
+  shift
+  case $tool in
+    sed) [[ $# -eq 4 && $1 == -i && $2 == -E && $3 == "$SED_FSTAB_EXPR" ]] && hc_under_ctroot "$4" && ok=1 ;;
+    cp) [[ $# -eq 4 && $1 == -p && $2 == --remove-destination && $4 == "$3.vm2lxc-orig" ]] &&
+      hc_under_ctroot "$3" && hc_under_ctroot "$4" && ok=1 ;;
+    touch) [[ $# -eq 1 ]] && hc_under_ctroot "$1" && ok=1 ;;
+    ln) [[ $# -eq 3 && $1 == -sfn && $2 == /dev/null && $3 == */etc/systemd/system/* ]] && hc_under_ctroot "$3" && ok=1 ;;
+  esac
+  ((ok)) || refuse "$tool: not an allowed container edit (got: $*)"
+}
+
+# lxc-usernsexec -m u:0:<base>:65536 -m g:0:<base>:65536 -- <an allowed edit or extract>
+hc_usernsexec() {
+  local base
+  [[ $# -ge 6 && $1 == -m && $3 == -m && $5 == -- ]] || {
+    refuse "lxc-usernsexec: unexpected arguments"
+    return
+  }
+  [[ $2 =~ ^u:0:([0-9]{5,10}):65536$ ]] || {
+    refuse "lxc-usernsexec: bad uid map"
+    return
+  }
+  base=${BASH_REMATCH[1]}
+  [[ $4 == "g:0:$base:65536" && $base == "$CT_MAPBASE" ]] || {
+    refuse "lxc-usernsexec: the maps must be the container's id map"
+    return
+  }
+  shift 5
+  case $1 in
+    tar) hc_tar "${@:2}" ;;
+    sed | cp | touch | ln) hc_ctedit "$@" ;;
+    *) refuse "lxc-usernsexec: '$1' is not an allowed command" ;;
+  esac
+}
+
 host_cmd() {
   local bin=${1:-} b p
   shift || true
@@ -242,15 +429,28 @@ host_cmd() {
       [[ $# -eq 1 ]] && hc_under_runroot "$1" || refuse "umount: only one path under $(run_root), no flags (got: $*)"
       ;;
     mountpoint)
-      [[ $# -eq 2 && $1 == -q ]] && hc_under_runroot "$2" || refuse "mountpoint: unexpected arguments"
+      [[ $# -eq 2 && $1 == -q ]] && { hc_under_runroot "$2" || hc_under_ctroot "$2"; } || refuse "mountpoint: unexpected arguments"
       ;;
     mkdir)
-      [[ $# -eq 2 && $1 == -p ]] && hc_under_runroot "$2" || refuse "mkdir: only 'mkdir -p' under $(run_root)"
+      [[ $# -eq 2 && $1 == -p ]] && { hc_under_runroot "$2" || hc_under_stage "$2"; } ||
+        refuse "mkdir: only 'mkdir -p' under $(run_root) or this run's staging directory"
       ;;
-    rmdir) # rmdir only removes EMPTY directories, so allowing the run root itself is safe
-      [[ $# -eq 1 ]] && { hc_under_runroot "$1" || { [[ $1 == "$(run_root)" ]] && hc_under_runroot "$1/x"; }; } ||
-        refuse "rmdir: only one path under $(run_root)"
+    rmdir) # rmdir only removes EMPTY directories, so allowing the roots themselves is safe
+      [[ $# -eq 1 ]] && { hc_under_runroot "$1" || hc_under_stage "$1" ||
+        { [[ $1 == "$(run_root)" ]] && hc_under_runroot "$1/x"; } ||
+        { [[ $1 == "$(stage_root)" ]] && hc_under_stage "$1/$RUN_ID"; }; } ||
+        refuse "rmdir: only one path under $(run_root) or the staging directory"
       ;;
+    rm) # only a staged tarball of this run, never a directory, never a glob
+      [[ $# -eq 3 && $1 == -f && $2 == -- ]] && hc_under_stage "$3" && [[ $3 == *.tar ]] ||
+        refuse "rm: only 'rm -f -- <staged tarball of this run>'"
+      ;;
+    qm) hc_qm "$@" ;;
+    pct) hc_pct "$@" ;;
+    tar) hc_tar "$@" ;;
+    blkid) hc_blkid "$@" ;;
+    sed | cp | touch | ln) hc_ctedit "$bin" "$@" ;;
+    lxc-usernsexec) hc_usernsexec "$@" ;;
     lsblk) # lsblk -P -n -p -o NAME,FSTYPE,TYPE <dev>: -P prints KEY="value" pairs, so empty fields cannot shift columns
       [[ $# -eq 6 && $1 == -P && $2 == -n && $3 == -p && $4 == -o && $5 == NAME,FSTYPE,TYPE && $6 == /dev/* && $6 != *..* ]] ||
         refuse "lsblk: unexpected arguments"
@@ -285,6 +485,13 @@ host_cmd() {
     # command is bounded. --foreground keeps it in our process group so Ctrl-C still reaches it.
     local limit=${VM2LXC_CMD_TIMEOUT:-120}
     [[ $limit =~ ^[0-9]+$ ]] || limit=120
+    # copying a guest and creating its container legitimately take longer than a storage command; still bounded
+    case "$bin ${1:-}" in
+      "tar "* | "pct create" | "lxc-usernsexec "* | "pct start" | "pct destroy" | "pct stop")
+        local long=${VM2LXC_LONG_TIMEOUT:-7200}
+        [[ $long =~ ^[0-9]+$ ]] && ((long > limit && long <= 86400)) && limit=$long
+        ;;
+    esac
     LVM_SUPPRESS_FD_WARNINGS=1 exec timeout --foreground --kill-after=5 "$limit" "$bin" "$@"
   ) </dev/null
 }
@@ -370,6 +577,18 @@ journal_close() { # rc 1 if it could not be written: the journal is then NOT clo
   sync "$JOURNAL" 2>/dev/null || true
 }
 
+# COMMITTED: the conversion succeeded. Steps marked KEPT (the container, the VM's stopped state) stay;
+# everything else is torn down as usual. `undo` later undoes the KEPT steps and closes the journal.
+journal_commit() {
+  printf 'COMMITTED\n' >>"$JOURNAL" || return 1
+  sync "$JOURNAL" 2>/dev/null || true
+}
+
+journal_ct() { # <ctid>: which container this run creates, so cleanup and undo can find it again
+  printf 'CT\t%s\n' "$1" >>"$JOURNAL" || return 1
+  sync "$JOURNAL" 2>/dev/null || true
+}
+
 # journal_load <run>: fills JL_* (latest ST line wins), RUN_ID, RUN_VMID, JOURNAL.
 # The file is data we do not fully trust (a restored backup, a hand edit): every field is validated
 # BEFORE it is used, because a sequence number like `x[$(cmd)]` would otherwise run `cmd` as an
@@ -379,7 +598,7 @@ journal_load() {
   [[ $1 =~ ^[a-z][a-z0-9]{3,30}$ ]] || return 1
   f="$(state_dir)/runs/$1/journal"
   [[ -r $f ]] || return 1
-  JL_N=0 JL_CLOSED=0
+  JL_N=0 JL_CLOSED=0 JL_COMMITTED=0 JL_CT=""
   JL_KIND=() JL_ARGS=() JL_STATE=()
   RUN_ID=$1 RUN_VMID="" JOURNAL=$f
   while IFS=$'\t' read -r a b c rest; do
@@ -399,7 +618,7 @@ journal_load() {
         fi
         ;;
       ST)
-        if [[ $b =~ ^[0-9]{1,6}$ && $c =~ ^(PENDING|DONE|UNDONE|FAILED|FOREIGN)$ ]]; then
+        if [[ $b =~ ^[0-9]{1,6}$ && $c =~ ^(PENDING|DONE|UNDONE|FAILED|FOREIGN|KEPT)$ ]]; then
           b=$((10#$b))
           JL_STATE[b]=$c
         else
@@ -407,8 +626,14 @@ journal_load() {
         fi
         ;;
       CLOSED) JL_CLOSED=1 ;;
+      COMMITTED) JL_COMMITTED=1 ;;
+      CT)
+        if [[ $b =~ $RE_CTID ]]; then JL_CT=$b; else bad=$((bad + 1)); fi
+        ;;
     esac
   done <"$f"
+  # the container of a run is bound into the allowlist as soon as its journal is read
+  if [[ -n $JL_CT ]]; then CT_ID=$JL_CT; fi
   if ((bad > 0)); then
     printf 'vm2lxc: journal %s: ignored %d malformed line(s)\n' "$1" "$bad" >&2
   fi
@@ -417,15 +642,44 @@ journal_load() {
 
 # runs_open: ids of runs whose journal is not CLOSED.
 runs_open() {
-  local d
+  local d r n
   shopt -s nullglob
   for d in "$(state_dir)"/runs/*/; do
     [[ -f ${d}journal ]] || continue
-    if ! grep -q '^CLOSED$' "${d}journal"; then
-      basename "$d"
+    grep -q '^CLOSED$' "${d}journal" && continue
+    r=$(basename "$d")
+    if grep -q '^COMMITTED$' "${d}journal"; then
+      # a committed conversion is finished work, not a crash: only list it if something other than the
+      # kept container/VM state is still pending (a teardown that was cut short)
+      journal_load "$r" 2>/dev/null || continue
+      local pending=0
+      for ((n = 1; n <= JL_N; n++)); do
+        [[ -n ${JL_KIND[$n]:-} && ${JL_STATE[$n]:-} != UNDONE && ${JL_STATE[$n]:-} != FOREIGN && ${JL_STATE[$n]:-} != KEPT ]] && pending=1
+      done
+      ((pending)) || continue
     fi
+    printf '%s\n' "$r"
   done
   shopt -u nullglob
+}
+
+# committed_run_for_ct <ctid>: the run id of the open committed conversion that created this container.
+committed_run_for_ct() {
+  local d r
+  [[ $1 =~ $RE_CTID ]] || return 1
+  shopt -s nullglob
+  for d in "$(state_dir)"/runs/*/; do
+    [[ -f ${d}journal ]] || continue
+    grep -q '^CLOSED$' "${d}journal" && continue
+    grep -q '^COMMITTED$' "${d}journal" || continue
+    grep -qx $'CT\t'"$1" "${d}journal" || continue
+    r=$(basename "$d")
+    shopt -u nullglob
+    printf '%s' "$r"
+    return 0
+  done
+  shopt -u nullglob
+  return 1
 }
 
 LOCK_FD=""
@@ -767,12 +1021,239 @@ act_undo_mount() { # <device> <mountpoint> <fstype>
   return 0
 }
 
+# --- conversion handlers (convert / undo) -----------------------------------------------------------------
+# The same rules as the snapshot handlers: the journal says PENDING before the action runs; an object that
+# already exists is never adopted (FOREIGN); identity is re-verified before anything is destroyed.
+
+# vm_status <vmid>: running | stopped | unknown
+vm_status() {
+  local out
+  out=$(host_cmd qm status "$1") || return $?
+  case $out in
+    *"status: running"*) printf running ;;
+    *"status: stopped"*) printf stopped ;;
+    *) printf unknown ;;
+  esac
+}
+
+# ct_state <ctid>: running | stopped | absent | unknown. rc 0 unless the answer could not be had: only the
+# exact "does not exist" means absent (the same rule as zfs_exists: "could not tell" is never "gone").
+ct_state() {
+  local out rc=0
+  out=$(host_cmd pct status "$1" 2>&1) || rc=$?
+  if ((rc == 0)); then
+    case $out in
+      *"status: running"*) printf running ;;
+      *"status: stopped"*) printf stopped ;;
+      *) printf unknown ;;
+    esac
+    return 0
+  fi
+  if ((rc != EXIT_REFUSED)) && [[ $out == *"does not exist"* ]]; then
+    printf absent
+    return 0
+  fi
+  printf '%s\n' "$out" >&2
+  return "$rc"
+}
+
+# ct_is_ours <ctid>: rc 0 if the container's tags include THIS run's tag, 1 if not, other = error
+ct_is_ours() {
+  local cfg
+  cfg=$(host_cmd pct config "$1") || return $?
+  grep -qE "^tags: (.*[;, ])?vm2lxc-${RUN_ID}([;, ].*)?\$" <<<"$cfg"
+}
+
+act_do_vm_stop() { # <vmid> <was-running 0|1> <ctid>: stop-and-copy (D2): the snapshot is then consistent
+  local vmid=$1 was=$2 st
+  [[ $was == 1 ]] || return 0
+  st=$(vm_status "$vmid") || return $?
+  [[ $st == running ]] || return 0
+  host_cmd qm shutdown "$vmid" --timeout "${VM2LXC_SHUTDOWN_TIMEOUT:-90}" || return $?
+  st=$(vm_status "$vmid") || return $?
+  if [[ $st != stopped ]]; then
+    printf 'vm2lxc: VM %s did not stop\n' "$vmid" >&2
+    return 1
+  fi
+}
+act_undo_vm_stop() {
+  local vmid=$1 was=$2 ctid=${3:-} st cs
+  [[ $was == 1 ]] || return 0
+  # Never start the VM while its container runs: that would be two live copies of one machine
+  # (one MAC, one IP, and possibly one Tailscale identity).
+  if [[ -n $ctid && $ctid == "$CT_ID" ]]; then
+    cs=$(ct_state "$ctid") || return $?
+    if [[ $cs == running ]]; then
+      refuse "container $ctid is running: the VM $vmid will not be started while it does"
+      return
+    fi
+  fi
+  st=$(vm_status "$vmid") || return $?
+  [[ $st == stopped ]] || return 0
+  host_cmd qm start "$vmid"
+}
+
+act_do_vm_onboot() { # <vmid> <old>: a VM that autostarts would boot beside its container (D3)
+  [[ $2 == 1 ]] || return 0
+  host_cmd qm set "$1" --onboot 0
+}
+act_undo_vm_onboot() {
+  [[ $2 == 1 ]] || return 0
+  host_cmd qm set "$1" --onboot 1
+}
+
+act_do_stage_dir() { host_cmd mkdir -p "$1"; } # <dir>
+act_undo_stage_dir() {
+  [[ -d $1 ]] || return 0
+  host_cmd rmdir "$1" || return $?
+  host_cmd rmdir "$(stage_root)" 2>/dev/null || true
+}
+
+act_do_tar_create() { # <mounted guest filesystem> <staged tarball>
+  host_cmd tar --numeric-owner --xattrs --acls --one-file-system -cpf "$2" -C "$1" .
+}
+act_undo_tar_create() {
+  [[ -e $2 || -L $2 ]] || return 0
+  host_cmd rm -f -- "$2"
+}
+
+act_do_ct_create() { # <ctid> <staged rootfs.tar> <pct create options...>
+  local ctid=$1 tarball=$2 cs
+  shift 2
+  cs=$(ct_state "$ctid") || return $?
+  if [[ $cs != absent ]]; then
+    STEP_FOREIGN=1
+    refuse "container $ctid already exists (it will not be adopted)"
+    return
+  fi
+  host_cmd pct create "$ctid" "$tarball" "$@"
+}
+act_undo_ct_create() {
+  local ctid=$1 cs rc=0
+  cs=$(ct_state "$ctid") || return $?
+  [[ $cs == absent ]] && return 0
+  ct_is_ours "$ctid" || rc=$?
+  if ((rc == 1)); then
+    refuse "container $ctid exists but is not tagged vm2lxc-$RUN_ID: left alone"
+    return
+  elif ((rc != 0)); then
+    return "$rc"
+  fi
+  if [[ $cs == running ]]; then host_cmd pct stop "$ctid" || return $?; fi
+  host_cmd pct unmount "$ctid" >/dev/null 2>&1 || true # a container that is not mounted answers with an error
+  host_cmd pct destroy "$ctid" --purge
+}
+
+act_do_ct_mount() { # <ctid>
+  host_cmd pct mount "$1" || return $?
+  if [[ ! -d $(ct_root "$1") ]]; then
+    printf 'vm2lxc: pct mount succeeded but %s is not a directory\n' "$(ct_root "$1")" >&2
+    return 1
+  fi
+}
+act_undo_ct_mount() {
+  local cs
+  cs=$(ct_state "$1") || return $?
+  [[ $cs == absent ]] && return 0
+  host_cmd pct unmount "$1" >/dev/null 2>&1 || true
+}
+act_do_ct_unmount() { host_cmd pct unmount "$1"; } # <ctid>
+act_undo_ct_unmount() { return 0; }
+
+# ct_do <priv 0|1> <idmap base> <command...>: an edit INSIDE the container's filesystem. An unprivileged
+# container's files belong to shifted ids, so the command runs in the same user namespace the container will
+# use (ownership comes out right, and it could not touch a real-root file even by mistake). A privileged one
+# is edited directly. The command is a HOST tool, never a binary from the guest.
+ct_do() {
+  local priv=$1 base=$2
+  shift 2
+  CT_MAPBASE=$base
+  if [[ $priv == 1 ]]; then
+    host_cmd "$@"
+  else
+    host_cmd lxc-usernsexec -m "u:0:$base:65536" -m "g:0:$base:65536" -- "$@"
+  fi
+}
+
+# The three fix-ups, on the container's COPY (never the VM): the fstab lines that name the VM's disks are
+# commented out (a backup stays), cloud-init is disabled so it cannot rewrite network/hostname/keys, and
+# the serial getty for a console that does not exist is masked. Every path was resolved chroot-style first.
+act_do_ct_fixup() { # <ctid> <priv> <idmap base>
+  local ctid=$1 priv=$2 base=$3 root p
+  root=$(ct_root "$ctid")
+  if [[ ! -d $root ]]; then
+    printf 'vm2lxc: the container root %s is not mounted\n' "$root" >&2
+    return 1
+  fi
+  if gfs_is_file "$root" /etc/fstab; then
+    p=$GFS_PATH
+    ct_do "$priv" "$base" cp -p --remove-destination "$p" "$p.vm2lxc-orig" || return $?
+    ct_do "$priv" "$base" sed -i -E "$SED_FSTAB_EXPR" "$p" || return $?
+  fi
+  if gfs_is_dir "$root" /etc/cloud; then
+    # resolved chroot-style including the last component, so even a hostile symlink there stays inside the container
+    gfs_resolve "$root" /etc/cloud/cloud-init.disabled || return 1
+    if ! ct_do "$priv" "$base" touch "$GFS_PATH"; then
+      printf 'vm2lxc: could not create /etc/cloud/cloud-init.disabled in the container (a symlink in the guest points outside it?). Not continuing: cloud-init would rewrite the network on first boot.\n' >&2
+      return 1
+    fi
+  fi
+  if gfs_is_dir "$root" /etc/systemd/system; then
+    ct_do "$priv" "$base" ln -sfn /dev/null "$GFS_PATH/serial-getty@ttyS0.service" || return $?
+  fi
+}
+act_undo_ct_fixup() { return 0; } # the edits live in the container, which is destroyed with it
+
+# Extra disks: the data goes into the mount point of the extra VOLUME, never into the root filesystem. The
+# mount point is resolved chroot-style and must really be a mount point; a plain directory would mean the
+# volume is not mounted there, and writing would silently fill the rootfs.
+act_do_ct_copy_disk() { # <ctid> <staged tarball> <mount path in the container> <priv> <idmap base>
+  local ctid=$1 tarball=$2 mp=$3 priv=$4 base=$5 root dest
+  root=$(ct_root "$ctid")
+  CT_MAPBASE=$base
+  gfs_resolve "$root" "$mp" || return 1
+  dest=$GFS_PATH
+  if [[ ! -d $dest ]]; then
+    printf 'vm2lxc: the mount point %s does not exist in the container\n' "$mp" >&2
+    return 1
+  fi
+  if ! host_cmd mountpoint -q "$dest"; then
+    printf 'vm2lxc: %s is not a mount point (the extra volume is not mounted there): refusing to write into the root filesystem\n' "$mp" >&2
+    return 1
+  fi
+  ct_do "$priv" "$base" tar --numeric-owner --xattrs --acls -xpf "$tarball" -C "$dest"
+}
+act_undo_ct_copy_disk() { return 0; }
+
+act_do_ct_start() { # <ctid>: the cutover. The VM is already stopped (stop-and-copy).
+  local cs
+  host_cmd pct start "$1" || return $?
+  cs=$(ct_state "$1") || return $?
+  if [[ $cs != running ]]; then
+    printf 'vm2lxc: container %s did not reach the running state\n' "$1" >&2
+    return 1
+  fi
+}
+act_undo_ct_start() {
+  local cs rc=0
+  cs=$(ct_state "$1") || return $?
+  [[ $cs == running ]] || return 0
+  ct_is_ours "$1" || rc=$?
+  if ((rc == 1)); then
+    refuse "container $1 is not tagged vm2lxc-$RUN_ID: left running, not stopped by us"
+    return
+  elif ((rc != 0)); then
+    return "$rc"
+  fi
+  host_cmd pct stop "$1"
+}
+
 # --- apply and teardown ---------------------------------------------------------------------
 # run_apply: execute PLAN, journalling every step PENDING before it runs.
-run_apply() {
+run_apply() { # [keep]: with 'keep' the results of an earlier phase (MOUNTS, SKIPPED, notes) are not reset
   local line kind rc seq
   local -a f
-  MOUNTS=() SKIPPED=() MOUNT_NOTES=()
+  if [[ ${1:-} != keep ]]; then MOUNTS=() SKIPPED=() MOUNT_NOTES=(); fi
   for line in "${PLAN[@]}"; do
     IFS='|' read -ra f <<<"$line"
     kind=${f[0]}
@@ -797,7 +1278,7 @@ run_apply() {
 # rc 0 only when everything is gone and the journal is CLOSED; otherwise the journal stays
 # open so that `vm2lxc cleanup` can finish the job.
 run_teardown() {
-  local run=$1 n kind state rc final=0 jfail=0
+  local run=$1 keep=${2:-0} n kind state rc final=0 jfail=0 # keep=1: also undo the KEPT steps (that is `undo`)
   local -a args
   journal_load "$run" || {
     printf 'vm2lxc: no journal for run %s\n' "$run" >&2
@@ -808,6 +1289,7 @@ run_teardown() {
     kind=${JL_KIND[$n]:-}
     state=${JL_STATE[$n]:-}
     [[ -n $kind && $state != UNDONE && $state != FOREIGN ]] || continue
+    if [[ $state == KEPT && $keep != 1 ]]; then continue; fi
     if ! declare -F "act_undo_${kind//-/_}" >/dev/null; then
       refuse "journal step $n has an unknown kind '$kind': left alone" || final=$?
       continue
@@ -830,7 +1312,9 @@ run_teardown() {
   if ((final == 0)); then
     host_cmd rmdir "$(run_root)/$run" 2>/dev/null || true
     host_cmd rmdir "$(run_root)" 2>/dev/null || true # the base dir, if no other run is using it
-    if ((jfail)) || ! journal_close; then
+    if ((JL_COMMITTED)) && [[ $keep != 1 ]]; then
+      : # a committed conversion stays open (not CLOSED) until `undo` closes it
+    elif ((jfail)) || ! journal_close; then
       printf 'vm2lxc: everything was undone but the journal %s could not be updated: it stays open (cleanup is safe to repeat)\n' "$JOURNAL" >&2
       final=1
     fi

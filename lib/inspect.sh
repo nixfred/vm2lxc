@@ -34,6 +34,18 @@ vm_run_state() { # vmid -> running|stopped|unknown
 # and every teardown message, including "teardown is INCOMPLETE", would vanish exactly when
 # the operator needs it. So cmd_inspect saves the real stdout/stderr and the trap writes there.
 INSPECT_OUT_FD=1 INSPECT_ERR_FD=2
+# run_arm_traps: from here on, however the command ends (error, Ctrl-C, SIGTERM, the ssh session dropping,
+# a reader going away) the run is torn down. Shared by inspect and convert.
+run_arm_traps() {
+  exec {INSPECT_OUT_FD}>&1 {INSPECT_ERR_FD}>&2
+  INSPECT_ARMED=1
+  trap inspect_trap EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP  # the ssh session dropping must still tear down
+  trap 'exit 141' PIPE # a reader that went away (`| head`) must still tear down
+}
+
 inspect_trap() {
   local rc=$?
   # A signal that arrives WHILE we are tearing down must not abort the teardown: that would
@@ -146,13 +158,7 @@ cmd_inspect() {
   lock_acquire || die "$EXIT_REFUSED" "another vm2lxc run holds the lock (no changes made)"
   inspect_revalidate "$vmid" "$run" || die "$EXIT_REFUSED" "VM $vmid changed since the plan was shown: nothing was done, run it again"
   journal_new "$vmid" "$run" || die "$EXIT_ENV" "could not create the journal under $(state_dir)"
-  exec {INSPECT_OUT_FD}>&1 {INSPECT_ERR_FD}>&2
-  INSPECT_ARMED=1
-  trap inspect_trap EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  trap 'exit 129' HUP # the ssh session dropping must still tear down
-  trap 'exit 141' PIPE # a reader that went away (`| head`) must still tear down
+  run_arm_traps
 
   printf '\nExecuting. Journal: %s\n' "$JOURNAL"
   run_apply || die "$?" "the plan failed part-way (everything created so far is being torn down)"

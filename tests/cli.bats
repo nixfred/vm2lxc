@@ -41,16 +41,28 @@ load helpers
   [ "$status" -eq 64 ]
 }
 
-@test "convert is a stub: says not implemented and exits 70" {
-  run "$VM2LXC" convert 100
-  [ "$status" -eq 70 ]
-  [[ $output == *"not implemented"* ]]
+@test "convert validates its arguments: no id, two ids, a bad id and a bad --ctid are usage errors (64)" {
+  run "$VM2LXC" convert
+  [ "$status" -eq 64 ]
+  run "$VM2LXC" convert 100 101
+  [ "$status" -eq 64 ]
+  run "$VM2LXC" convert abc
+  [ "$status" -eq 64 ]
+  run "$VM2LXC" convert 100 --ctid 5
+  [ "$status" -eq 64 ]
+  run "$VM2LXC" convert 100 --ctid
+  [ "$status" -eq 64 ]
+  [[ $output == *"--ctid needs a value"* ]]
 }
 
-@test "undo is a stub: not implemented, exit 70" {
-  run "$VM2LXC" undo 100
-  [ "$status" -eq 70 ]
-  [[ $output == *"not implemented"* ]]
+@test "undo validates its argument, and with nothing converted it says so (66)" {
+  run "$VM2LXC" undo
+  [ "$status" -eq 64 ]
+  run "$VM2LXC" undo abc
+  [ "$status" -eq 64 ]
+  VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/nostate" run "$VM2LXC" undo 100
+  [ "$status" -eq 66 ]
+  [[ $output == *"no open vm2lxc conversion created container 100"* ]]
 }
 
 @test "cleanup is real now: with no unfinished run it says so and exits 0" {
@@ -82,10 +94,12 @@ load helpers
 }
 
 @test "global flags are accepted before and after the subcommand, in any order" {
-  run "$VM2LXC" --yes --dry-run --no-tui --answers /does/not/matter convert 100
-  [ "$status" -eq 70 ]
-  run "$VM2LXC" convert 100 --yes --dry-run --no-tui --answers=/does/not/matter --node=pve1
-  [ "$status" -eq 70 ]
+  run_fx --yes --dry-run --no-tui --answers /does/not/matter convert 100 --ctid 900
+  [ "$status" -eq 0 ]
+  [[ $output == *"Nothing was executed"* ]]
+  run_fx convert 100 --yes --dry-run --no-tui --answers=/does/not/matter --node=pve1 --ctid=900
+  [ "$status" -eq 0 ]
+  [[ $output == *"Nothing was executed"* ]]
 }
 
 @test "vmid_valid accepts real VM ids and rejects everything else" {
