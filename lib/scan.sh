@@ -111,7 +111,14 @@ cmd_scan() {
     printf '  No VMs found on this node.\n'
     return 0
   fi
-  printf '  %-3s %-6s %-20s %-8s %-8s %-18s %-8s %-7s %s\n' '#' VMID NAME STATE VERDICT 'RAM now -> rec' SAVED DISK WHY
+  # name column: as wide as the longest name (so "vm2lxc-test-deb12-svc" is not cut), 4..32
+  local name_w=4 row
+  for row in "${SCAN_ROWS[@]}"; do
+    IFS=$'\t' read -r _rank _saved vmid name _rest <<<"$row"
+    if ((${#name} > name_w)); then name_w=${#name}; fi
+  done
+  if ((name_w > 32)); then name_w=32; fi
+  printf '  %-3s %-6s %-*s %-8s %-8s %-18s %-8s %-7s %s\n' '#' VMID "$name_w" NAME STATE VERDICT 'RAM now -> rec' SAVED DISK WHY
   while IFS=$'\t' read -r _rank _saved vmid name state verdict ram saved_txt disk why; do
     n=$((n + 1))
     case $verdict in
@@ -119,8 +126,8 @@ cmd_scan() {
       YELLOW) color=$C_YEL ;;
       *) color=$C_RED ;;
     esac
-    printf '  %-3s %-6s %-20.20s %-8s %s%-8s%s %-18s %-8s %-7s %s\n' \
-      "$n" "$vmid" "$name" "$state" "$color" "$verdict" "$C_RST" "$ram" "$saved_txt" "$disk" "$why"
+    printf '  %-3s %-6s %-*.*s %-8s %s%-8s%s %-18s %-8s %-7s %s\n' \
+      "$n" "$vmid" "$name_w" "$name_w" "$name" "$state" "$color" "$verdict" "$C_RST" "$ram" "$saved_txt" "$disk" "$why"
   done < <(printf '%s\n' "${SCAN_ROWS[@]}" | sort -t $'\t' -k1,1n -k2,2nr -k3,3n)
 
   printf '\n  %d VMs: %d green, %d yellow, %d red' "${#SCAN_ROWS[@]}" "$SCAN_GREEN" "$SCAN_YELLOW" "$SCAN_RED"

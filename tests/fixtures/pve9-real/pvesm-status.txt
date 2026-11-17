@@ -1,0 +1,4 @@
+Name               Type     Status     Total (KiB)      Used (KiB) Available (KiB)        %
+fast-lvm        lvmthin     active      1824522240       865005993       959516246   47.41%
+local               dir     active        51290592        14577628        34075140   28.42%
+local-lvm       lvmthin     active      1887694848       395094531      1492600316   20.93%

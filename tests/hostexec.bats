@@ -174,6 +174,28 @@ refused() { # <host_cmd args...>: must refuse with 77 and never reach the fake t
   refused ""
 }
 
+@test "R1: a nonsense run root makes every mount, mkdir and rmdir refuse (not '/', not one level deep, no '..')" {
+  local rr
+  for rr in / /etc /run "/tmp/a b/x" "/tmp/../etc/x" "relative/path" ""; do
+    VM2LXC_RUN_ROOT=$rr run host_cmd mkdir -p "$rr/x/y"
+    [ "$status" -eq 77 ] || { echo "run root '$rr' was accepted"; return 1; }
+  done
+  VM2LXC_RUN_ROOT=/run/vm2lxc run hc_under_runroot /run/vm2lxc/r1/x
+  [ "$status" -eq 0 ]
+}
+
+@test "the lock is never inherited by a child process (LVM warned about this on the first real run)" {
+  mkdir -p "$VM2LXC_STATE_DIR"
+  lock_acquire
+  seed_zvol "$Z1"
+  host_cmd zfs list -H -o name "$Z1" >/dev/null
+  host_cmd udevadm settle --timeout=1
+  [ ! -e "$FAKE_STATE/leaks.log" ] || { cat "$FAKE_STATE/leaks.log"; return 1; }
+  # and the check itself works: a child started WITHOUT the guard does see the lock fd
+  zfs list -H -o name "$Z1" >/dev/null
+  [ -e "$FAKE_STATE/leaks.log" ]
+}
+
 # --- ZFS lifecycle -----------------------------------------------------------------------------
 
 @test "zfs: full lifecycle leaves the source untouched and everything of ours gone, in the right order" {

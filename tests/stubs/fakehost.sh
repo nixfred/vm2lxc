@@ -19,6 +19,13 @@ S=${FAKE_STATE:?FAKE_STATE not set}
 mkdir -p "$S/zfs" "$S/lvm" "$S/loops" "$S/lsblk" "$S/count"
 printf '%s %s\n' "$name" "$*" >>"$S/calls.log"
 
+# A child must never inherit the run lock (the executor closes it before every exec).
+for _fd in /proc/"$$"/fd/*; do
+  case $(readlink "$_fd" 2>/dev/null) in
+    */lock) printf 'LEAK %s holds %s\n' "$name" "$(readlink "$_fd")" >>"$S/leaks.log" ;;
+  esac
+done
+
 enc() {
   local x=${1//\//%2F}
   printf '%s' "${x//@/%40}"

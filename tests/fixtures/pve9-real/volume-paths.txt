@@ -1,0 +1,5 @@
+local-lvm:vm-600-disk-0 /dev/pve/vm-600-disk-0
+local-lvm:vm-601-disk-0 /dev/pve/vm-601-disk-0
+local-lvm:vm-602-disk-0 /dev/pve/vm-602-disk-0
+local-lvm:vm-603-disk-0 /dev/pve/vm-603-disk-0
+local-lvm:vm-603-disk-1 /dev/pve/vm-603-disk-1

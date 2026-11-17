@@ -46,8 +46,13 @@ loop_is_ours() { # /dev/loopN or /dev/loopNpM
   return 1
 }
 
+# The run root must itself be a sane absolute path at least two levels deep (/run/vm2lxc),
+# never "/" or "/etc": everything we mkdir or mount lives beneath it.
+RE_RUN_ROOT='^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$'
 hc_under_runroot() {
-  [[ $1 == "$(run_root)"/* && $1 != *..* ]]
+  local rr
+  rr=$(run_root)
+  [[ $rr =~ $RE_RUN_ROOT && $rr != *..* && $1 == "$rr"/* && $1 != *..* ]]
 }
 
 # --- host_cmd: the one door (R6) ------------------------------------------------------------
@@ -221,8 +226,9 @@ host_cmd() {
     mkdir)
       [[ $# -eq 2 && $1 == -p ]] && hc_under_runroot "$2" || refuse "mkdir: only 'mkdir -p' under $(run_root)"
       ;;
-    rmdir)
-      [[ $# -eq 1 ]] && hc_under_runroot "$1" || refuse "rmdir: only one path under $(run_root)"
+    rmdir) # rmdir only removes EMPTY directories, so allowing the run root itself is safe
+      [[ $# -eq 1 ]] && { hc_under_runroot "$1" || { [[ $1 == "$(run_root)" ]] && hc_under_runroot "$1/x"; }; } ||
+        refuse "rmdir: only one path under $(run_root)"
       ;;
     lsblk)
       [[ $# -eq 3 && $1 == -nrpo && $2 == NAME,FSTYPE && $3 == /dev/* && $3 != *..* ]] || refuse "lsblk: unexpected arguments"
@@ -232,7 +238,17 @@ host_cmd() {
       ;;
     *) refuse "$bin: not on the allowlist" ;;
   esac || return $?
-  "$bin" "$@" </dev/null
+  # Children must not inherit our lock fd or the saved stdout/stderr (found on the first real
+  # run: LVM warns about every leaked descriptor, and a long-lived child holding the lock fd
+  # would keep the lock after we exit). So close them, in a subshell, before the exec.
+  (
+    local fd
+    for fd in "${LOCK_FD:-}" "${INSPECT_OUT_FD:-}" "${INSPECT_ERR_FD:-}"; do
+      # shellcheck disable=SC2294  # eval of a validated integer: "exec 10>&-"
+      if [[ $fd =~ ^[0-9]+$ ]] && ((fd > 2)); then eval "exec $fd>&-"; fi
+    done
+    LVM_SUPPRESS_FD_WARNINGS=1 exec "$bin" "$@"
+  ) </dev/null
 }
 
 # zfs_exists <name>: rc 0 exists, 1 absent, anything else is an error to propagate.
@@ -682,6 +698,7 @@ run_teardown() {
   done
   if ((final == 0)); then
     host_cmd rmdir "$(run_root)/$run" 2>/dev/null || true
+    host_cmd rmdir "$(run_root)" 2>/dev/null || true # the base dir, if no other run is using it
     journal_close
   fi
   return "$final"

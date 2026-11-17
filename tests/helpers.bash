@@ -176,7 +176,8 @@ assert_nothing_left() {
   left+=$(find "$FAKE_STATE/zfs" "$FAKE_STATE/lvm" -type f -name '*vm2lxc*' 2>/dev/null || true)
   [[ -z $(fake_mounts) ]] || left+=$'\n'"mounts: $(fake_mounts)"
   [[ $(fake_loops) == 0 ]] || left+=$'\n'"loop devices remain"
-  left+=$(find "$VM2LXC_RUN_ROOT" -mindepth 1 2>/dev/null || true)
+  left+=$(find "$VM2LXC_RUN_ROOT" 2>/dev/null || true) # the run root itself must be gone too
+  [[ ! -e $FAKE_STATE/leaks.log ]] || left+=$'\n'"a child inherited the lock fd: $(cat "$FAKE_STATE/leaks.log")"
   [[ -z ${left//[[:space:]]/} ]] || {
     echo "objects left behind:"
     echo "$left"

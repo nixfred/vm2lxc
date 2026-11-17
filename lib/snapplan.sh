@@ -182,5 +182,5 @@ snap_plan_print() {
   done
   printf '\nThen: look inside, run the guest checks. Always afterwards, also on error or Ctrl-C:\n'
   printf '  unmount everything, destroy the clones, destroy the snapshot, in reverse order,\n'
-  printf '  verifying each object is ours (stamp vm2lxc:run=%s) before it is touched.\n' "$run"
+  printf '  verifying each object is ours (the vm2lxc-%s tag or stamp) before it is touched.\n' "$run"
 }
