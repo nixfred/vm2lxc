@@ -146,6 +146,7 @@ CLOSED</pre>
 <li><b>Layouts seen:</b> a root plus an EFI partition, two ext4 partitions (root plus boot), and a whole-disk ext4 with no partition table.</li>
 <li><b>Source never modified:</b> on a stopped two-disk VM, the sha256 of both source volumes was identical before and after a run (the BRIEF's checksum proof).</li>
 <li><b>Crash injection:</b> 61 runs killed at points through the execution window with SIGKILL, SIGTERM and SIGHUP. SIGKILL leaves at most a stray snapshot LV and <code>cleanup --yes</code> restored the exact baseline each time. The sweep also found two real gaps (a signal during teardown aborted it; SIGHUP had no handler), both fixed and re-verified: 26 of 26 later TERM/HUP runs left the host clean.</li>
+<li><b>Re-verified after the independent review's fixes:</b> the deployed source was identical to <code>HEAD</code>; <code>inspect --yes</code> on all four VMs left the host at its baseline fingerprint; the live <code>/proc/mounts</code> showed <code>ro,nosuid,nodev,noexec,relatime,norecovery</code> (the kernel's spelling of our <code>noload</code>); SIGTERM, SIGHUP and a reader going away (SIGPIPE) tore down clean, and after a SIGKILL <code>cleanup --yes</code> restored the baseline exactly.</li>
 <li><b>Found only by the real run:</b> LVM reported the leaked lock descriptor (R11); PVE 9 prints a <code>Total (KiB)</code> storage header, <code>template: null</code> in the VM list, and a 30-minute month RRD step.</li>
 </ul>
 

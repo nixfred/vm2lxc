@@ -18,6 +18,8 @@ Plain bash and `jq`. No AI in the tool. No network access. MIT licensed.
 
 </div>
 
+<p align="center"><a href="#why">Why</a> · <a href="#what-works-today">What works</a> · <a href="#quick-start">Quick start</a> · <a href="#commands">Commands</a> · <a href="#the-safety-model">Safety model</a> · <a href="#how-inspect-works">How it works</a> · <a href="#how-it-was-verified">Verification</a> · <a href="#limitations">Limitations</a> · <a href="#roadmap">Roadmap</a> · <a href="#development">Development</a></p>
+
 ---
 
 > **Read this first.** vm2lxc is a work in progress. Today it can **assess** a VM (`preflight`, `scan`),
@@ -57,7 +59,7 @@ container a new MAC, or offer no real rollback. vm2lxc is built around the oppos
 (`losetup`, `lsblk`, `flock`). `lvm2` for LVM-thin storage, `zfsutils` for ZFS. No installer yet:
 
 ```bash
-git clone <repository-url> && cd vm2lxc
+git clone https://github.com/nixfred/vm2lxc.git && cd vm2lxc
 ./vm2lxc --help
 ```
 
@@ -186,6 +188,18 @@ as if every line will eventually meet a bad day. The full design, with the failu
     read as command-line options are refused.
 12. **A locked VM is never snapshotted.** A `lock` (backup, rollback, migrate, ...) means something is working on its disks.
 13. **Nothing executes without `--yes`**, never in fixture mode, and never without root on a real node.
+14. **The journal is honest.** A step that cannot be recorded is not performed, and a teardown that cannot update the
+    journal says so and leaves the run open instead of pretending it finished.
+15. **"Could not tell" is never "gone".** A probe that times out or errors is an error, not proof that something is
+    already unmounted or destroyed; teardown stops there (rule 9) and `cleanup` retries.
+16. **Nothing the guest or a file controls reaches an interpreter or the host.** Journal fields are validated before
+    use, a guest symlink to the host's `/etc` is not a guest root, and terminal control sequences (including UTF-8
+    ones and bidi overrides) are neutralised in any locale.
+17. **Fixed trust anchors.** Tools must come from a system directory (not a hostile `PATH`), the run root is always
+    `/run/vm2lxc`, the mount options must be *exactly* the read-only set, and the ownership stamp is read with
+    `-s local`.
+18. **Only our devices are mounted, and the VM is re-read after the lock.** A guest LVM or RAID volume that udev
+    auto-activated is skipped and reported; a VM that became locked or changed after the plan was shown is refused.
 
 ## How `inspect` works
 
@@ -210,7 +224,7 @@ always   unmount, detach, remove, in reverse order, verifying identity first, th
 | dir / qcow2, NFS, Ceph, thick LVM | Not yet. Reported as `not supported yet` with a plain reason. |
 | ext2 / ext3 / ext4 | Mounted `ro,noload,nodev,nosuid,noexec`. Verified. |
 | xfs, btrfs | Implemented (`norecovery,nouuid` / default subvolume only). Not yet mounted for real. |
-| LUKS, guest LVM, mdraid | Detected and reported as skipped. Never opened. |
+| LUKS, guest LVM, mdraid | Detected and reported as skipped. Never opened. A guest volume group or array the host auto-activated is skipped too. |
 | swap, vfat (EFI) | Skipped, listed in the output. |
 
 ## How it was verified
@@ -220,6 +234,9 @@ This project's claim is "safe", so the evidence matters more than the claim.
 - **Real host.** `inspect --yes` ran against four disposable VMs (Debian 12, Ubuntu 24.04, Alpine, and a
   two-disk Debian) on a live Proxmox VE 9.2.28 host. After every run the LV list, thin-pool usage, loop
   devices, mounts and journals were compared with a baseline taken before it: identical, every time.
+- **Re-verified after the review.** The fixes from the independent review were redeployed and the real-host checks
+  repeated: baseline restored after every run, live mount options `ro,nosuid,nodev,noexec,relatime,norecovery`,
+  `SIGTERM`/`SIGHUP`/`SIGPIPE` tear down clean, `SIGKILL` + `cleanup --yes` restores the exact baseline.
 - **Bit-identical source.** On a stopped two-disk VM the sha256 of both source volumes was identical before
   and after a run.
 - **Crash injection on the real host.** 61 runs were killed at points through the execution window
@@ -238,7 +255,9 @@ This project's claim is "safe", so the evidence matters more than the claim.
   produced no output in four attempts, which is recorded rather than hidden.
 - **Mutation testing.** The safety rails were attacked on purpose (stamp checks removed, `-f` allowed, a
   read-write mount permitted, the journal written after the command, teardown continuing after a failure,
-  and more). Every weakening tried was caught by at least one test, and the tests that missed one were fixed.
+  and more): 36 single-fix reversals in the last round. All were caught by at least one test except one that is
+  behaviourally equivalent (bash runs the `EXIT` trap on `SIGPIPE` itself, so an explicit handler is belt and
+  braces). The four that first slipped through exposed gaps in the tests, which were closed.
 - **Read-only is proven three independent ways** for `preflight`, `scan` and `inspect` without `--yes`: a
   static scan of the source for mutating commands, a run against stub `qm`/`pvesh`/`pvesm` binaries that log
   every call and refuse anything that is not a read, and `strace` of the tool and all its children showing no
@@ -300,6 +319,10 @@ Proxmox host is needed: the tests run the real code against canned data and a fa
 Open an issue with the output of `./vm2lxc preflight <vmid>` (and `qm config <vmid>` with anything private
 removed), your PVE version and storage type. **Please do not paste anything with credentials.** If you ran
 `inspect --yes` and something was left behind, run `./vm2lxc cleanup` and include its output.
+
+**Security.** The promise of this tool is that the source is never modified. If you find any way for it to touch a
+source volume, destroy an object it did not create, or execute something it should not, please report it to the
+maintainer privately rather than in a public issue.
 
 ## Credits
 
