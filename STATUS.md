@@ -85,10 +85,11 @@ and `--effort` made no measurable difference. So it is the model deliberating wi
 
 ## Left on the test host (hex)
 
-`/root/vm2lxc-src` (the deployed source), `/var/lib/vm2lxc/runs/*` (small CLOSED/COMMITTED journals, the audit trail
-of the real runs) and three scratch files of mine: `/root/vm600-disk0.sha.before`, `/root/mountwatch.log`,
-`/root/sweep.out`. All are mine and safe to remove; I left them rather than delete on the hypervisor without asking.
-The four test VMs are running; no test containers (610-613) exist.
+`/root/vm2lxc-src` (the deployed source) and `/var/lib/vm2lxc/runs/*` (78 small CLOSED/COMMITTED journals, the audit
+trail of the real runs). Both are mine and safe to remove, and both are deliberately kept.
+The three scratch files I had left (`/root/vm600-disk0.sha.before`, `/root/mountwatch.log`, `/root/sweep.out`) were
+deleted on 2026-11-17 at Fred's word, after checking nothing had them open; `vm2lxc cleanup` on hex then reported no
+unfinished run. The four test VMs are running; no test containers (610-613) exist.
 
 ## Publishing
 
