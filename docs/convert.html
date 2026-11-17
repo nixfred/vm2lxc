@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vm2lxc: convert and undo (design)</title>
+<style>
+  :root { --bg:#0b1020; --panel:#121a30; --ink:#dbe4ff; --dim:#8fa0c8; --line:#26325a; --ok:#35d07f; --warn:#f2b84b; --bad:#ff5d6c; --acc:#6aa7ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 18px 60px; }
+  h1 { font-size: 24px; margin: 0 0 4px; } h2 { font-size: 18px; margin: 30px 0 8px; color: var(--acc); border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  p, li { color: var(--ink); } .dim { color: var(--dim); }
+  code, pre { font: 13px/1.45 ui-monospace, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  code { padding: 1px 5px; } pre { padding: 10px 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; } th { background: var(--panel); color: var(--dim); }
+  .tag { display:inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px; border: 1px solid var(--line); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; margin: 8px 0; } summary { cursor: pointer; color: var(--acc); }
+</style>
+</head>
+<body>
+<main>
+<h1>convert and undo</h1>
+<p class="dim">vm2lxc, design of the conversion. Updated 2026-11-17. Status:
+  <span class="tag ok">verified on a real PVE 9.2 host with four guest types</span>
+  <span class="tag warn">LVM-thin only; ZFS is tested against a fake</span>
+  <span class="tag warn">alpha</span></p>
+
+<h2>1. What it does</h2>
+<p><code>vm2lxc convert &lt;vmid&gt;</code> turns a QEMU VM into a <b>new</b> LXC container. The VM is never deleted and its disks are never written:
+the only things ever done to it are a graceful shutdown and <code>onboot 0</code> (and, by <code>undo</code>, <code>start</code> and
+<code>onboot 1</code>). <code>vm2lxc undo &lt;ct&gt;</code> reverses it. Without <code>--yes</code> both commands only print the plan.</p>
+
+<h2>2. The pipeline</h2>
+<pre>
+ plan (read-only)   verdict, container id/hostname/sizes, the VM's MAC and bridge, the steps
+ --yes
+ PHASE A   (the same engine as `inspect`: write-ahead journal, run lock, signal traps)
+   vm-stop      graceful shutdown: stop-and-copy (D2), so the snapshot is consistent
+   vm-onboot    autostart off (D3): a VM that boots beside its container is the worst outcome
+   snapshot     storage-level snapshot of every source volume (thin LV or ZFS)
+   mount        read-only: loop device, ext4 `ro,noload,nodev,nosuid,noexec`
+ GATE      find the guest root, run the 12 guest checks.  RED  => tear down, restart the VM, exit 77
+ PHASE B   (decided from what the guest says)
+   stage-dir    /var/tmp/vm2lxc/&lt;run&gt;/
+   tar-create   the boot filesystem (and each extra disk) archived with --numeric-owner --xattrs --acls
+   ct-create    pct create from the archive: unprivileged (D5), the VM's exact MAC (D4), tags vm2lxc;vm2lxc-&lt;run&gt;,
+                created stopped, never starting at boot, ostype unmanaged
+   ct-mount     pct mount
+   ct-fixup     in the container's COPY: fstab lines naming the VM's disks commented (backup kept), cloud-init
+                disabled, netplan MAC-match removed, serial getty and kernel mounts masked
+   ct-copy-disk each extra disk into its mount point (D6), at the path the guest's fstab gives it
+   ct-unmount
+   ct-start     only with --start (the cutover)
+ COMMIT    ct-create, vm-stop, vm-onboot, ct-start become KEPT; the journal says COMMITTED
+ TEARDOWN  everything else (snapshot layer, staged archives) is undone, newest first
+</pre>
+
+<h2>3. Decisions applied (from the BRIEF)</h2>
+<table>
+<tr><th>#</th><th>Decision</th><th>How it is done</th></tr>
+<tr><td>D1</td><td>storage-level snapshots, not <code>qm snapshot</code></td><td>the snapshot layer; nothing is added to the VM's config</td></tr>
+<tr><td>D2</td><td>stop-and-copy is the default</td><td><code>vm-stop</code> before the snapshot; <code>--live</code> is not built</td></tr>
+<tr><td>D3</td><td>autostart off; never two live copies</td><td><code>vm-onboot</code>; <code>undo</code> refuses to start the VM while the container runs</td></tr>
+<tr><td>D4</td><td>VM's exact MAC, no guest network rewrite</td><td><code>hwaddr</code> copied; the interface <i>name</i> is read from the guest's own network config; ostype unmanaged</td></tr>
+<tr><td>D5</td><td>unprivileged by default; Docker refused</td><td><code>--privileged</code> is opt-in; the Docker guest check is RED</td></tr>
+<tr><td>D6</td><td>extra disks become mount points</td><td><code>mpN</code> volumes on the same storage, at the path fstab gives them (fallback <code>/mnt/&lt;disk&gt;</code>, said out loud)</td></tr>
+<tr><td>D9</td><td>identity files kept</td><td><code>machine-id</code>, SSH host keys, hostname are copied</td></tr>
+<tr><td>D11</td><td>red/yellow/green verdict with reasons</td><td><code>cfg_checks_run</code> then the 12 guest checks; RED refuses</td></tr>
+</table>
+<p class="dim">Not built yet: <code>--live</code> two-pass copy (D2), whiptail UI (D7), sizing choice UI (D8), vzdump backup and test restore (D9), soak period (D10), post-conversion compare (D12).</p>
+
+<h2>4. Safety rails added for convert and undo</h2>
+<p>These extend R1-R21 in <a href="snapshot-layer.html">snapshot-layer.html</a>. All of them live behind the same <code>host_cmd</code> allowlist.</p>
+<table>
+<tr><th>#</th><th>Rail</th><th>Enforced by</th></tr>
+<tr><td>R22</td><td><b>Stop-and-copy, gracefully.</b> The VM is shut down, never force-stopped; if it will not stop, nothing is created and nothing is snapshotted.</td><td><code>act_do_vm_stop</code></td></tr>
+<tr><td>R23</td><td><b>The VM is never deleted and its disks never written.</b> The <code>qm</code> validator allows only <code>status</code>, <code>start</code>, <code>shutdown --timeout N</code> and <code>set --onboot 0|1</code>, and only on this run's VM.</td><td><code>hc_qm</code></td></tr>
+<tr><td>R24</td><td><b>One container, identified by a tag.</b> It is created stopped, never starting at boot, tagged <code>vm2lxc-&lt;run&gt;</code>. A container that already has the wanted id is never adopted and never destroyed (journal state FOREIGN). Only this run's container id is accepted by <code>pct</code>.</td><td><code>act_do_ct_create</code>, <code>hc_pct</code></td></tr>
+<tr><td>R25</td><td><b>A closed option set for <code>pct create</code>.</b> Every option from a fixed list, every value against its own pattern; the archive must be this run's staged <code>rootfs.tar</code>. No password, no SSH keys, no raw <code>lxc.*</code> keys, no privileged flags.</td><td><code>hc_pct_create</code></td></tr>
+<tr><td>R26</td><td><b>Fix-ups never run guest code and never follow a guest symlink.</b> Every path is resolved chroot-style first (an absolute symlink is re-rooted under the container), then edited by <i>host</i> tools (<code>sed</code>, <code>cp</code>, <code>touch</code>, <code>ln</code>) with pinned expressions, inside the unprivileged user namespace. A guest symlink to a host file is neither edited nor copied in (tested for fstab, netplan, cloud-init and the unit masks).</td><td><code>act_do_ct_fixup</code>, <code>hc_ctedit</code>, <code>hc_usernsexec</code></td></tr>
+<tr><td>R27</td><td><b>Extra-disk data goes only into a verified mount point.</b> The destination is resolved chroot-style and must pass <code>mountpoint -q</code>; otherwise the write would silently fill the root filesystem. The volume's own <code>lost+found</code> is never replaced.</td><td><code>act_do_ct_copy_disk</code>, <code>hc_tar</code></td></tr>
+<tr><td>R28</td><td><b>undo is as careful as convert.</b> It stops and destroys the container only if it carries this run's tag; it starts the VM only if it was running before, and never while the container runs. A committed conversion is not mistaken for a crash by <code>cleanup</code>.</td><td><code>act_undo_ct_create</code>, <code>act_undo_vm_stop</code>, journal KEPT/COMMITTED</td></tr>
+<tr><td>R29</td><td><b>No silent data loss.</b> A second data filesystem on the boot disk that the guest does not mount at <code>/boot</code> or <code>/boot/efi</code> refuses the conversion (nothing changed, VM restarted). An extra disk with more than one mountable filesystem is refused too.</td><td><code>conv_decide</code></td></tr>
+</table>
+
+<h2>5. Failure matrix (each is a test; the fake injects the failure)</h2>
+<table>
+<tr><th>Failure</th><th>Result</th></tr>
+<tr><td>the VM will not shut down</td><td>nothing is snapshotted or created; the VM is untouched</td></tr>
+<tr><td>a guest check is RED (Docker, NFS server, DKMS, disk layers, ...)</td><td>exit 77, snapshot layer torn down, the VM restarted</td></tr>
+<tr><td><code>pct create</code> fails</td><td>teardown, VM restarted, no container, journal closed</td></tr>
+<tr><td><code>pct mount</code> or a fix-up fails after the container exists</td><td>the half-built container is destroyed (it carries the run's tag), the VM restarted</td></tr>
+<tr><td>an extra volume is not mounted where expected</td><td>refused before writing a byte; rollback</td></tr>
+<tr><td>the container id was taken meanwhile</td><td>refused ("it will not be adopted"); the other container is left alone</td></tr>
+<tr><td>a second data filesystem on the boot disk</td><td>refused with the reason; rollback</td></tr>
+<tr><td>SIGTERM / SIGHUP / SIGPIPE during the copy</td><td>teardown, VM restarted (exit 143 / 129 / 141)</td></tr>
+<tr><td>SIGKILL after the container exists</td><td>the journal is open; <code>cleanup --yes</code> destroys the container and restarts the VM</td></tr>
+<tr><td>the tag of the container was changed before <code>undo</code></td><td>left alone (R28); nothing started</td></tr>
+<tr><td>the VM was already stopped before the conversion</td><td>nothing is stopped; <code>undo</code> leaves it stopped and says so</td></tr>
+</table>
+
+<h2>6. Verified on a real host</h2>
+<p>Proxmox VE 9.2.28, LVM-thin, four disposable test VMs (tag <code>vm2lxc-test-rm</code>), each converted into a container and undone again.
+After every run the host was compared with a baseline: no snapshot LV, no loop device, no mount, no staging directory, no open journal.</p>
+<table>
+<tr><th>Guest</th><th>Result</th></tr>
+<tr><td>Debian 12 cloud image (netplan + networkd, cloud-init)</td><td>converted in 14-20 s; the source disk's sha256 identical before and after; the container booted fully (<code>running</code>, 0 failed units), <code>eth0</code> UP with a DHCP address under the VM's MAC, gateway and DNS reachable; <code>undo</code> restarted the VM</td></tr>
+<tr><td>Debian 12, two disks</td><td>the second disk became <code>mp0</code> at <code>/home</code> (path read from the guest's fstab) as a separate ext4 volume; every file sha256-identical to the source disk; network up</td></tr>
+<tr><td>Alpine 3.24 (OpenRC, no systemd)</td><td>booted, OpenRC services started, DHCP address, gateway reachable</td></tr>
+<tr><td>Ubuntu 24.04 with Tailscale</td><td>converted but <b>not started</b> (a second copy of the node must not come online): config, copied Tailscale state, netplan change and fix-ups checked inside the stopped container; <code>undo</code> restarted the VM</td></tr>
+</table>
+<h3>Three bugs only the real host could show</h3>
+<table>
+<tr><th>Found</th><th>Cause</th><th>Fix</th></tr>
+<tr><td>the container booted but <code>eth0</code> stayed DOWN</td><td>cloud-init's netplan matches the NIC by <code>PermanentMACAddress</code>; a veth has none, so networkd called the link "unmanaged"</td><td>remove exactly the <code>match: / macaddress: / set-name:</code> shape from the copy (backup kept); anything else is left byte for byte alone</td></tr>
+<tr><td>copying the second disk failed (<code>Cannot change ownership ... lost+found</code>)</td><td>the new volume already has its own <code>lost+found</code>, owned by real root, which an unprivileged user namespace may not touch</td><td>the source's <code>lost+found</code> is excluded from the extract; the failure had rolled back perfectly</td></tr>
+<tr><td>Ubuntu 24.04 was refused as "iSCSI/multipath configured"</td><td>the cloud image ships <code>open-iscsi</code>, <code>multipath-tools</code> and a stock <code>multipath.conf</code></td><td>RED only for real use: discovered targets, a customised <code>multipath.conf</code>, or an fstab mount on a multipath/iSCSI device</td></tr>
+</table>
+<p>Each fix has a regression test and a mutation check (revert the fix, a test goes red).</p>
+
+<h2>7. Not verified, or not done</h2>
+<ul>
+<li><b>ZFS</b> has never run on real hardware (including the kernel-name <code>/dev/zdN</code> handling). Only the fake has run it.</li>
+<li><b>Proxmox VE 8.x</b> has not been run; neither has a privileged container (<code>--privileged</code>) or qcow2/Ceph/dir storage.</li>
+<li><b>DHCP guests keep their MAC, not necessarily their IP.</b> The container of VM 600 got a different lease from the VM. The address is the DHCP server's decision; a reservation by MAC pins it. A guest with a static address keeps it.</li>
+<li><b>Tailscale:</b> the state is copied, the VM is set not to autostart, and the output warns loudly, but <code>undo</code> does not copy state back into the VM.</li>
+<li>The container keeps the guest's kernel and initramfs packages (unused). Staging needs free space in <code>/var/tmp</code> about the size of the guest.</li>
+<li>One filesystem per extra disk; guest LVM, LUKS and RAID are refused (RED).</li>
+</ul>
+
+<script type="application/json" id="state">
+{"doc":"convert","version":1,"date":"2026-11-17","status":"verified on PVE 9.2.28 lvmthin with 4 guest types; zfs fake only","rails":["R22","R23","R24","R25","R26","R27","R28","R29"],"real_host_guests":["debian12-cloudimg","debian12-two-disk","alpine-3.24","ubuntu-24.04-tailscale"],"real_host_bugs_found":3,"source_disk_sha256_identical":true}
+</script>
+</main>
+</body>
+</html>

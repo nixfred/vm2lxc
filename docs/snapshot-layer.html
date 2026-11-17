@@ -37,8 +37,7 @@ A write-ahead journal, a run lock, <code>vm2lxc inspect &lt;vmid&gt;</code> (pla
 </td><td>
 qcow2 and Ceph (later, per D1).<br>
 Guest LVM / LUKS / mdraid: detected and reported, not opened (needs <code>vgimportclone</code> / unlock).<br>
-Running the guest checks' real logic (they still report pending).<br>
-Anything that changes the VM or its disks: this layer only ever reads them.
+Anything that changes the VM or its disks: this layer only ever reads them. (The conversion that builds on it is described in <a href="convert.html">convert.html</a>; its extra rails are R22-R29.)
 </td></tr>
 </table>
 
