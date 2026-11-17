@@ -236,16 +236,26 @@ debian_guest() {
   has_finding red guest-disk-layers "partition on the disk"
 }
 
-@test "iscsi-multipath: multipath.conf, iSCSI nodes or the package is red" {
+@test "iscsi-multipath: configured targets or a real multipath.conf are red" {
   run_check iscsi_multipath
   no_finding guest-iscsi-multipath
-  gput etc/multipath.conf "x"
+  gput etc/multipath.conf $'defaults {\n  user_friendly_names yes\n}\n'
   run_check iscsi_multipath
-  has_finding red guest-iscsi-multipath
+  has_finding red guest-iscsi-multipath "configured"
   fresh
   mkdir -p "$G/etc/iscsi/nodes/iqn.x"
   run_check iscsi_multipath
-  has_finding red guest-iscsi-multipath
+  has_finding red guest-iscsi-multipath "configured"
+}
+
+@test "iscsi-multipath: the packages alone (Ubuntu cloud images ship them) are info, never red; an all-comment multipath.conf is not configuration" {
+  gput var/lib/dpkg/status $'Package: open-iscsi\nStatus: install ok installed\n\nPackage: multipath-tools\nStatus: install ok installed\n'
+  gput etc/multipath.conf $'# an example only\n\n'
+  mkdir -p "$G/etc/iscsi/nodes"
+  run_check iscsi_multipath
+  has_finding info guest-iscsi-multipath "open-iscsi multipath-tools"
+  [ "$VERDICT" = green ]
+  [ "$N_RED" -eq 0 ]
 }
 
 @test "nested-virt: libvirt or qemu-system installed, or libvirt domains, is red" {

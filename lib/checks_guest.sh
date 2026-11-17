@@ -264,10 +264,25 @@ guest_check_disk_layers() {
 }
 
 guest_check_iscsi_multipath() {
-  local root=$1
-  if gfs_dir_nonempty "$root" /etc/iscsi/nodes || gfs_is_file "$root" /etc/multipath.conf ||
-    gfs_pkg_installed "$root" open-iscsi || gfs_pkg_installed "$root" multipath-tools; then
-    finding red guest-iscsi-multipath guest "iSCSI initiator or multipath is configured: it needs raw block devices, which a container does not have"
+  local root=$1 line cfg=0 pkgs=""
+  # CONFIGURED is what matters: targets that were discovered or logged in, or a real multipath.conf.
+  # The packages alone are not a problem: Ubuntu cloud images ship open-iscsi and multipath-tools by default
+  # (found on a real host, where a plain "package installed" rule refused a perfectly convertible guest).
+  if gfs_dir_nonempty "$root" /etc/iscsi/nodes; then cfg=1; fi
+  if gfs_is_file "$root" /etc/multipath.conf; then
+    while IFS= read -r line; do
+      line=${line%%#*}
+      if [[ -n ${line//[[:space:]]/} ]]; then cfg=1; fi
+    done < <(gfs_cat "$root" /etc/multipath.conf)
+  fi
+  if ((cfg)); then
+    finding red guest-iscsi-multipath guest "iSCSI targets or multipath are configured: they need raw block devices, which a container does not have"
+    return 0
+  fi
+  gfs_pkg_installed "$root" open-iscsi && pkgs+=" open-iscsi"
+  gfs_pkg_installed "$root" multipath-tools && pkgs+=" multipath-tools"
+  if [[ -n $pkgs ]]; then
+    finding info guest-iscsi-multipath guest "installed but nothing is configured (${pkgs# }): inert in a container, its services may log errors"
   fi
 }
 
