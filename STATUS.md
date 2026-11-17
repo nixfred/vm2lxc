@@ -1,6 +1,6 @@
 # vm2lxc status
 
-Updated 2026-11-17 (Larry:gus). Local repo `main`; remotes `forgejo` (private), `nas`, and `origin` = GitHub (private).
+Updated 2026-11-17 (Larry:gus). Local repo `main`; remotes `forgejo` (private), `nas`, and `origin` = GitHub (**public** since 2026-11-17).
 Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and `docs/convert.html` (rails R22-R29).
 
 ## TL;DR
@@ -75,9 +75,11 @@ and `--effort` made no measurable difference. So it is the model deliberating wi
 
 ## Open questions
 
-1. **GitHub visibility.** The GitHub repo is **private**. Making it public needs a scrub first: `docs/BRIEF.md`,
-   `docs/KICKOFF.md` and this file are internal planning notes that name real VM IDs and host details, and the git
-   history contains them. Recommended: a fresh public history from the current tree minus those three files.
+1. **GitHub visibility: public, as chosen by Fred on 2026-11-17, against the advice to scrub first.** The full history is public,
+   including the internal planning notes (`docs/BRIEF.md`, `docs/KICKOFF.md`) that name internal bots and the VM ids the
+   tool is told never to touch (110, 111, 120, 121, 301, 351), private-range LAN addresses, and an ssh alias. A survey
+   of all 23 commits found no secrets, no tailnet name and no email addresses (gitleaks clean). Forgejo stays private
+   (the server enforces it). If Fred later wants the notes gone from history, that means a fresh public repo.
 2. **jq on PVE 8.** PVE 9.2 ships jq 1.7 (fine). PVE 8 ships 1.6; the code sticks to 1.6 features but only 1.7 has run.
 3. **A real ZFS run** needs a PVE host with a ZFS-backed VM.
 
@@ -91,4 +93,4 @@ The four test VMs are running; no test containers (610-613) exist.
 ## Publishing
 
 `forgejo` = `ssh://for-nixfred/nixfred/vm2lxc.proxmox.git` (private on the server), `nas` =
-`ssh://pi@10.0.0.9/srv/git/vm2lxc.proxmox.git`, `origin` = `https://github.com/nixfred/vm2lxc.git` (private).
+`ssh://pi@10.0.0.9/srv/git/vm2lxc.proxmox.git`, `origin` = `https://github.com/nixfred/vm2lxc.git` (public, MIT detected by GitHub).
