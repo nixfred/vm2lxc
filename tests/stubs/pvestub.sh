@@ -25,8 +25,13 @@ case $name in
     cat "$STUB_FIXTURES/qm-config-$2.txt" || exit 2
     ;;
   pvesm)
-    [[ $# -eq 1 && $1 == status ]] || refuse "$@"
-    cat "$STUB_FIXTURES/pvesm-status.txt"
+    if [[ $# -eq 1 && $1 == status ]]; then
+      cat "$STUB_FIXTURES/pvesm-status.txt"
+    elif [[ $# -eq 2 && $1 == path && $2 =~ ^[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+$ ]]; then
+      awk -v v="$2" '$1 == v { print $2; f = 1 } END { exit !f }' "$STUB_FIXTURES/volume-paths.txt" || exit 2
+    else
+      refuse "$@"
+    fi
     ;;
   pveversion)
     [[ $# -eq 0 ]] || refuse "$@"

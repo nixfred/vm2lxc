@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vm2lxc: snapshot-mount layer (design)</title>
+<style>
+  :root { --bg:#0b1020; --panel:#121a30; --ink:#dbe4ff; --dim:#8fa0c8; --line:#26325a; --ok:#35d07f; --warn:#f2b84b; --bad:#ff5d6c; --acc:#6aa7ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 18px 60px; }
+  h1 { font-size: 24px; margin: 0 0 4px; } h2 { font-size: 18px; margin: 30px 0 8px; color: var(--acc); border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  p, li { color: var(--ink); } .dim { color: var(--dim); }
+  code, pre { font: 13px/1.45 ui-monospace, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  code { padding: 1px 5px; } pre { padding: 10px 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; } th { background: var(--panel); color: var(--dim); font-weight: 600; }
+  .tag { display:inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px; border: 1px solid var(--line); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; margin: 8px 0; } summary { cursor: pointer; color: var(--acc); }
+</style>
+</head>
+<body>
+<main>
+<h1>Snapshot-mount layer</h1>
+<p class="dim">vm2lxc, slice 2, first increment. Written 2026-11-17 by Larry:gus. Status: <span class="tag warn">design + code against fakes, never run on a real host</span></p>
+
+<h2>1. What it is for</h2>
+<p>Give the guest-internal checks (and later the copy step) a <b>read-only view of each VM disk's filesystems</b> without ever modifying the source volume, and guarantee that everything it creates is removed again, even on a crash. Decision D1 (storage-level snapshots, not <code>qm snapshot</code>), BRIEF section 6.3.</p>
+<table>
+<tr><th>In this increment</th><th>Not yet</th></tr>
+<tr><td>
+ZFS zvols: full lifecycle (snapshot, read-only clone, mount, unmount, destroy), tested against a stateful fake.<br>
+LVM-thin: the <b>plan</b> is generated and tested; execution refuses with a clear message.<br>
+Filesystems: ext2/3/4, XFS, btrfs (default subvolume).<br>
+A write-ahead journal, a run lock, <code>vm2lxc inspect &lt;vmid&gt;</code> (plan by default, <code>--yes</code> executes) and a real <code>vm2lxc cleanup</code>.
+</td><td>
+LVM-thin execution, qcow2, Ceph (later, per D1).<br>
+Guest LVM / LUKS / mdraid: detected and reported, not opened (needs <code>vgimportclone</code> / unlock).<br>
+Running the guest checks' real logic (they still report pending).<br>
+Any run against a real Proxmox host: <b>none was made</b>. KICKOFF's hard rule still stands.
+</td></tr>
+</table>
+
+<h2>2. Flow</h2>
+<pre>inspect &lt;vmid&gt;                                   (plan is always printed first)
+  read: qm config, pvesm path &lt;storage:volume&gt;   -> source dataset / LV for every data disk
+  plan: pure function, no host calls
+  --yes? no  -> stop here, nothing executed
+        yes  -> take run lock, create journal, install trap (EXIT, INT, TERM)
+                 1. snapshot   all source zvols in ONE atomic command
+                 2. clone      each snapshot, readonly=on, stamped
+                 3. dev-ready  settle udev, wait for the device and its partitions
+                 4. mount      each supported filesystem read-only under /run/vm2lxc/&lt;run&gt;/
+                 5. pick the guest root, run the guest checks against it
+        always -> teardown in reverse: umount, destroy clones, destroy snapshot, rmdir, close journal</pre>
+
+<h2>3. Names and what is created</h2>
+<table>
+<tr><th>Object</th><th>ZFS</th><th>LVM-thin (plan only)</th></tr>
+<tr><td>run id</td><td colspan="2"><code>r</code> + epoch + 4 hex, e.g. <code>r1731800000a3f1</code> (regex <code>^[a-z][a-z0-9]{3,30}$</code>)</td></tr>
+<tr><td>snapshot</td><td><code>&lt;pool/ds&gt;@vm2lxc-&lt;run&gt;</code>, user property <code>vm2lxc:run=&lt;run&gt;</code></td><td><code>lvcreate -s</code> named <code>vm2lxc-&lt;vmid&gt;-&lt;run&gt;-&lt;diskkey&gt;</code>, tag <code>vm2lxc-&lt;run&gt;</code></td></tr>
+<tr><td>clone / device</td><td><code>&lt;parent&gt;/vm2lxc-&lt;vmid&gt;-&lt;run&gt;-&lt;diskkey&gt;</code>, <code>readonly=on</code>, stamped; device <code>/dev/zvol/&lt;clone&gt;</code>, partitions <code>-partN</code></td><td>made read-only with <code>lvchange -pr</code>, activated <code>-ay -K</code>, partitions via <code>kpartx -a -r</code></td></tr>
+<tr><td>mounts</td><td colspan="2"><code>/run/vm2lxc/&lt;run&gt;/&lt;diskkey&gt;/&lt;partition&gt;</code></td></tr>
+</table>
+<p class="dim">The source dataset or LV is only ever the <b>origin</b> of a snapshot. It is never opened, written, renamed or property-edited (<code>snapdev=visible</code> would edit it, so it is not used).</p>
+
+<h2>4. Mount options</h2>
+<table>
+<tr><th>Filesystem</th><th>Options</th><th>Why</th></tr>
+<tr><td>ext2 / ext3 / ext4</td><td><code>ro,noload,nodev,nosuid,noexec</code></td><td><code>ro</code> alone still replays the journal. <code>noload</code> does not.</td></tr>
+<tr><td>xfs</td><td><code>ro,norecovery,nouuid,nodev,nosuid,noexec</code></td><td>no log replay; <code>nouuid</code> because a clone shares the UUID</td></tr>
+<tr><td>btrfs</td><td><code>ro,nodev,nosuid,noexec</code></td><td>default subvolume only: reported as a limit</td></tr>
+<tr><td>LVM2_member, crypto_LUKS, linux_raid_member</td><td colspan="2">not opened; reported "guest LVM / LUKS / mdraid: not supported yet"</td></tr>
+<tr><td>swap, vfat (EFI), others</td><td colspan="2">skipped, listed in the summary</td></tr>
+</table>
+
+<h2>5. Journal (write-ahead)</h2>
+<p>One file per run: <code>/var/lib/vm2lxc/runs/&lt;run&gt;/journal</code> (persistent across reboots, because the clones are). Tab-separated, append-only, human-readable:</p>
+<pre># vm2lxc journal v1
+RUN   &lt;run&gt;   &lt;vmid&gt;   &lt;epoch&gt;
+STEP  &lt;seq&gt;   &lt;kind&gt;   &lt;arg&gt; ...
+ST    &lt;seq&gt;   PENDING | DONE | UNDONE | FAILED
+CLOSED</pre>
+<p>A step is journalled <b>PENDING before it runs</b>. A crash therefore leaves a step that <i>may</i> exist, and teardown checks real state before undoing it (so undo is idempotent, and safe to run twice). The latest <code>ST</code> line wins. <code>CLOSED</code> is written only after teardown verified everything is gone.</p>
+<p>One <code>flock</code> on <code>/var/lib/vm2lxc/lock</code> serialises <code>inspect --yes</code> and <code>cleanup</code>. <code>cleanup</code> that finds the lock held says so and touches nothing.</p>
+
+<h2>6. Safety rails</h2>
+<p>These matter most, because this is the first code in the project that can destroy anything.</p>
+<table>
+<tr><th>#</th><th>Rail</th><th>Enforced by</th></tr>
+<tr><td>R1</td><td>Only names matching our patterns are ever destroyed or unmounted (<code>@vm2lxc-&lt;run&gt;</code>, <code>/vm2lxc-&lt;vmid&gt;-&lt;run&gt;-&lt;key&gt;</code>, paths under the run root).</td><td><code>host_cmd</code> argument validation</td></tr>
+<tr><td>R2</td><td>Only objects <b>recorded in the journal of a run we own</b> are touched. Nothing is found by scanning or by pattern alone.</td><td>teardown reads the journal, not the pool</td></tr>
+<tr><td>R3</td><td>Before destroying, re-verify identity: the <code>vm2lxc:run</code> stamp equals the run id, and a clone's <code>origin</code> equals the recorded snapshot. A mismatch refuses, exit 77, and leaves the object alone.</td><td>undo handlers</td></tr>
+<tr><td>R4</td><td>Never a recursive or forced flag: no <code>-r</code>, <code>-R</code>, <code>-f</code>, no <code>umount -l</code>. A snapshot with dependents therefore fails safe instead of taking children with it.</td><td><code>host_cmd</code> allowlist</td></tr>
+<tr><td>R5</td><td>A target equal to a source dataset/LV is refused outright.</td><td>planner and <code>host_cmd</code></td></tr>
+<tr><td>R6</td><td>Every mutating command passes one function, <code>host_cmd</code>, an allowlist of exact argument shapes. Anything else dies. It lives only in <code>lib/hostexec.sh</code>.</td><td>allowlist + static test</td></tr>
+<tr><td>R7</td><td>Mounts are read-only only (<code>ro</code> must be in the options), only for filesystems in the table above, and only on devices under our own clone path.</td><td><code>host_cmd mount</code></td></tr>
+<tr><td>R8</td><td><code>inspect</code> executes nothing without <code>--yes</code>, and refuses to execute at all in fixture mode and when not root on a PVE node.</td><td>command code + tests</td></tr>
+<tr><td>R9</td><td>A pre-existing object with the name we are about to create is a refusal, never adopted.</td><td>apply handlers</td></tr>
+</table>
+
+<h2>7. Failure matrix (each is a test against the stateful fake)</h2>
+<table>
+<tr><th>Failure</th><th>Result</th></tr>
+<tr><td>snapshot command fails</td><td>nothing exists, nothing to undo, exit non-zero</td></tr>
+<tr><td>crash after snapshot, before clone</td><td>journal says snapshot DONE; <code>cleanup</code> destroys it</td></tr>
+<tr><td>clone fails for disk 2 of 2</td><td>disk 1 clone and the snapshot are removed in reverse order</td></tr>
+<tr><td>device never appears</td><td>times out, tears down</td></tr>
+<tr><td>mount fails halfway through a disk's partitions</td><td>already-mounted partitions are unmounted first</td></tr>
+<tr><td>teardown itself fails midway</td><td>journal not CLOSED; a second <code>cleanup</code> finishes the job</td></tr>
+<tr><td>teardown run twice</td><td>second run is a no-op</td></tr>
+<tr><td>object has the right name but the wrong stamp</td><td>refused (R3), left alone, exit 77</td></tr>
+<tr><td>another <code>inspect</code> or <code>cleanup</code> holds the lock</td><td>refuses, touches nothing</td></tr>
+<tr><td>Ctrl-C or SIGTERM during apply</td><td>trap runs teardown</td></tr>
+</table>
+
+<h2>8. Assumptions that only a real host can confirm</h2>
+<ul>
+<li><code>pvesm path &lt;storage:vol&gt;</code> prints <code>/dev/zvol/&lt;pool/ds&gt;</code> for zfspool and <code>/dev/&lt;vg&gt;/&lt;lv&gt;</code> for lvmthin.</li>
+<li><code>zfs snapshot -o vm2lxc:run=...</code> and <code>zfs clone -o readonly=on -o vm2lxc:run=...</code> are accepted for zvols on PVE 8/9's OpenZFS.</li>
+<li>zvol partition nodes appear as <code>&lt;clone&gt;-part1</code> after <code>udevadm settle</code>.</li>
+<li><code>lsblk -nrpo NAME,FSTYPE &lt;dev&gt;</code> lists the device and its partitions with filesystem types.</li>
+<li>A read-only clone of a snapshot of a <i>running</i> VM's zvol mounts cleanly with <code>ro,noload</code> (crash-consistent).</li>
+<li>The BRIEF's checksum proof (source volume bit-identical before and after) still has to be run on a disposable nested PVE.</li>
+</ul>
+
+<h2>9. Open questions for Fred</h2>
+<ol>
+<li>Is <code>vm2lxc inspect &lt;vmid&gt;</code> (plan by default, <code>--yes</code> to execute) the right user-facing name, or should this stay internal until <code>convert</code> exists?</li>
+<li>Clones are created next to the source zvol, so Proxmox lists them as orphan volumes while a run is live. Acceptable, or use a dedicated scratch dataset (one persistent object to create and own)?</li>
+<li>Where should the journals live long term: <code>/var/lib/vm2lxc/runs/</code> as built, or per-VM as BRIEF 4.10 sketched?</li>
+</ol>
+
+<script type="application/json" id="state">
+{"doc":"snapshot-layer","version":1,"date":"2026-11-17","status":"design+fakes","executable_storage":["zfspool"],"plan_only_storage":["lvmthin"],"rails":["R1","R2","R3","R4","R5","R6","R7","R8","R9"],"real_host_runs":0,"task":"vm2lxc-snapshot-layer-s2"}
+</script>
+</main>
+</body>
+</html>

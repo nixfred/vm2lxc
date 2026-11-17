@@ -1,0 +1,8 @@
+local-zfs:vm-100-disk-0 /dev/zvol/rpool/data/vm-100-disk-0
+local-zfs:vm-102-disk-0 /dev/zvol/rpool/data/vm-102-disk-0
+local-zfs:vm-106-disk-0 /dev/zvol/rpool/data/vm-106-disk-0
+local-zfs:vm-112-disk-0 /dev/zvol/rpool/data/vm-112-disk-0
+local-zfs:vm-114-disk-0 /dev/zvol/rpool/data/vm-114-disk-0
+local-lvm:vm-101-disk-0 /dev/pve/vm-101-disk-0
+local-lvm:vm-101-disk-1 /dev/pve/vm-101-disk-1
+local-lvm:vm-113-disk-0 /dev/pve/vm-113-disk-0

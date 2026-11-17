@@ -47,13 +47,23 @@ load helpers
   [[ $output == *"not implemented"* ]]
 }
 
-@test "undo and cleanup are stubs: not implemented, exit 70" {
+@test "undo is a stub: not implemented, exit 70" {
   run "$VM2LXC" undo 100
   [ "$status" -eq 70 ]
   [[ $output == *"not implemented"* ]]
-  run "$VM2LXC" cleanup
-  [ "$status" -eq 70 ]
-  [[ $output == *"not implemented"* ]]
+}
+
+@test "cleanup is real now: with no unfinished run it says so and exits 0" {
+  VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/nostate" run "$VM2LXC" cleanup
+  [ "$status" -eq 0 ]
+  [[ $output == *"Nothing to clean up"* ]]
+}
+
+@test "--help lists inspect and the new exit code" {
+  run "$VM2LXC" --help
+  [[ $output == *"inspect <vmid>"* ]]
+  [[ $output == *"77 a safety rail refused an action"* ]]
+  [[ $output == *"65 the VM's disks cannot be planned"* ]]
 }
 
 @test "stubs still validate their arguments like the real commands will" {

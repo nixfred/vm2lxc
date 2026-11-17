@@ -30,6 +30,12 @@ source "$VM2LXC_LIBDIR/sizing.sh"
 source "$VM2LXC_LIBDIR/preflight.sh"
 # shellcheck source=lib/scan.sh
 source "$VM2LXC_LIBDIR/scan.sh"
+# shellcheck source=lib/snapplan.sh
+source "$VM2LXC_LIBDIR/snapplan.sh"
+# shellcheck source=lib/hostexec.sh
+source "$VM2LXC_LIBDIR/hostexec.sh"
+# shellcheck source=lib/inspect.sh
+source "$VM2LXC_LIBDIR/inspect.sh"
 
 # --yes, --answers, --dry-run and --no-tui are accepted now so the CLI is stable, but
 # nothing consumes them until `convert` exists. Scoped disable, not a global one.
@@ -67,7 +73,7 @@ parse_args() {
   done
 }
 
-# Stubs (convert, undo, cleanup). They validate their arguments like the real commands
+# Stubs (convert, undo). They validate their arguments like the real commands
 # will, then say so and stop. They touch nothing: tests/readonly_guard.bats proves it.
 not_implemented() {
   printf 'vm2lxc %s: not implemented yet (this build only has read-only preflight and scan)\n' "$1" >&2
@@ -84,11 +90,6 @@ cmd_undo() {
   (($# == 1)) || die "$EXIT_USAGE" "usage: vm2lxc undo <ct>"
   vmid_valid "$1" || die "$EXIT_USAGE" "not a valid container id: '$1' (expected a number, 100 or higher)"
   not_implemented undo
-}
-
-cmd_cleanup() {
-  (($# == 0)) || die "$EXIT_USAGE" "usage: vm2lxc cleanup"
-  not_implemented cleanup
 }
 
 main() {
@@ -111,6 +112,7 @@ main() {
     scan) cmd_scan "${POSITIONAL[@]:1}" ;;
     convert) cmd_convert "${POSITIONAL[@]:1}" ;;
     undo) cmd_undo "${POSITIONAL[@]:1}" ;;
+    inspect) cmd_inspect "${POSITIONAL[@]:1}" ;;
     cleanup) cmd_cleanup "${POSITIONAL[@]:1}" ;;
     help) usage ;;
     *) die "$EXIT_USAGE" "unknown command: $cmd (try --help)" ;;

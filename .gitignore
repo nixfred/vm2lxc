@@ -2,3 +2,6 @@
 *.log
 *.tmp
 /scratch/
+
+# local task backlog (tasks-axi), not part of the project
+/backlog.md

@@ -12,9 +12,15 @@ load helpers
 
 # --- static ---------------------------------------------------------------------------
 
-# Code lines only: drop whole-line comments.
+# Code lines only: drop whole-line comments. lib/hostexec.sh is excluded on purpose: it is the
+# ONE file allowed to change anything (snapshot-mount layer), and it has its own tests
+# (tests/hostexec.bats). Every other file must stay clean, and must not even call into it.
 code_lines() {
-  grep -hvE '^[[:space:]]*#' "$REPO_ROOT/vm2lxc" "$REPO_ROOT"/lib/*.sh
+  local f files=("$REPO_ROOT/vm2lxc")
+  for f in "$REPO_ROOT"/lib/*.sh; do
+    [[ ${f##*/} == hostexec.sh ]] || files+=("$f")
+  done
+  grep -hvE '^[[:space:]]*#' "${files[@]}"
 }
 
 @test "static: no mutating verb follows qm, pvesh or pvesm anywhere in the source" {
@@ -46,6 +52,29 @@ code_lines() {
   local hits
   hits=$(code_lines | grep -nE 'sed[[:space:]]+(-[a-zA-Z]*i|--in-place)' || true)
   [ -z "$hits" ] || { echo "$hits"; return 1; }
+}
+
+@test "static: the mutating commands of the snapshot layer exist ONLY in lib/hostexec.sh" {
+  local pat='(zfs[[:space:]]+(snapshot|clone|destroy)|lvcreate[[:space:]]+-s|lvremove[[:space:]]+-y|lvchange[[:space:]]+-(p|a)|losetup[[:space:]]+-(r|d)|umount[[:space:]]|mount[[:space:]]+-o)'
+  grep -qE "$pat" "$REPO_ROOT/lib/hostexec.sh"
+  local hits
+  # lines that only PRINT a command (the human-readable plan) do not execute anything
+  hits=$(code_lines | grep -vE 'printf' | grep -nE "$pat" || true)
+  [ -z "$hits" ] || { echo "executor commands outside lib/hostexec.sh:"; echo "$hits"; return 1; }
+}
+
+@test "static: preflight, scan and the config/sizing code never reference the executor" {
+  local f hits=""
+  for f in preflight scan pve qmconf storage findings checks_cfg checks_guest sizing snapplan common; do
+    hits+=$(grep -nE 'host_cmd|run_apply|run_teardown|journal_(new|step|mark|close|load)|lock_acquire|act_(do|undo)_' "$REPO_ROOT/lib/$f.sh" | sed "s#^#$f.sh:#" || true)
+  done
+  [ -z "$hits" ] || { echo "$hits"; return 1; }
+}
+
+@test "static: only inspect.sh and the entry script may call into the executor" {
+  local hits
+  hits=$(grep -lE 'run_apply|run_teardown|lock_acquire' "$REPO_ROOT"/lib/*.sh "$REPO_ROOT/vm2lxc" | xargs -n1 basename | sort | tr '\n' ' ')
+  [ "$hits" = "hostexec.sh inspect.sh " ] || { echo "callers: $hits"; return 1; }
 }
 
 # --- dynamic ---------------------------------------------------------------------------
@@ -137,13 +166,33 @@ live() {
   grep -q "pvesh get /nodes/$(hostname -s)/qemu/100/rrddata" "$STUB_LOG"
 }
 
-@test "dynamic: convert, undo and cleanup make zero host calls" {
+@test "dynamic: convert and undo (stubs) and cleanup (nothing to do) make zero host calls" {
   live convert 100
   [ "$status" -eq 70 ]
   live undo 100
   [ "$status" -eq 70 ]
-  live cleanup
-  [ "$status" -eq 70 ]
+  VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/nostate" live cleanup
+  [ "$status" -eq 0 ]
+  [ ! -s "$STUB_LOG" ]
+}
+
+@test "dynamic: inspect in plan mode issues only allowed reads, in live mode, and no mutating tool" {
+  live --node pve-test inspect 100
+  [ "$status" -eq 0 ]
+  live --node pve-test inspect 101 --dry-run --yes
+  [ "$status" -eq 0 ]
+  refute_log '^REFUSED'
+  local bad
+  bad=$(grep -vE '^(pveversion |pvesm status|pvesm path [A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+|qm config [0-9]+|pvesh get /nodes/pve-test/qemu --output-format json)$' "$STUB_LOG" || true)
+  [ -z "$bad" ] || { echo "unexpected calls:"; echo "$bad"; return 1; }
+  grep -q '^pvesm path local-zfs:vm-100-disk-0$' "$STUB_LOG"
+  grep -q '^pvesm path local-lvm:vm-101-disk-1$' "$STUB_LOG"
+}
+
+@test "dynamic: inspect --yes without root and without a fixture is refused before any host call" {
+  if [ "$(id -u)" -eq 0 ]; then skip "running as root"; fi
+  VM2LXC_FIXTURE_DIR="" PATH="$STUBS:$PATH" run "$VM2LXC" inspect 100 --yes
+  [ "$status" -eq 69 ]
   [ ! -s "$STUB_LOG" ]
 }
 
@@ -184,10 +233,10 @@ live() {
   strace -qq -o /dev/null true 2>/dev/null || skip "strace/ptrace not permitted here"
   local log="$BATS_TEST_TMPDIR/strace.log" cmd bad
   local calls='open,openat,openat2,creat,unlink,unlinkat,rename,renameat,renameat2,mkdir,mkdirat,rmdir,truncate,ftruncate,chmod,fchmod,fchmodat,chown,fchown,fchownat,lchown,symlink,symlinkat,link,linkat,mknod,mknodat,utimensat,setxattr'
-  for cmd in "scan" "preflight 100" "preflight 105" "preflight 106"; do
+  for cmd in "scan" "preflight 100" "preflight 105" "preflight 106" "inspect 100" "inspect 101" "cleanup"; do
     : >"$log"
     # shellcheck disable=SC2086
-    VM2LXC_FIXTURE_DIR="$FIXTURES/pve8" strace -f -qq -o "$log" -e "trace=$calls" "$VM2LXC" $cmd >/dev/null 2>&1 || true
+    VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/nostate" VM2LXC_FIXTURE_DIR="$FIXTURES/pve8" strace -f -qq -o "$log" -e "trace=$calls" "$VM2LXC" $cmd >/dev/null 2>&1 || true
     [ -s "$log" ] || { echo "strace recorded nothing for: $cmd"; return 1; }
     # anything that opens for writing or changes the filesystem, except /dev/null and the tty probe bash does itself
     bad=$(grep -E 'O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND|O_TMPFILE|unlink|rename|mkdir|rmdir|truncate|chmod|chown|symlink|link\(|mknod|utimens|setxattr' "$log" |

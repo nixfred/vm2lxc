@@ -114,3 +114,89 @@ make_rrd() {
     --argjson maxmem "$maxmem" --argjson maxcpu "$maxcpu" \
     "[range(0; \$n) | {time: (\$start + . * \$step), cpu: ($cpuexpr), maxcpu: \$maxcpu, mem: ($memexpr), maxmem: \$maxmem}]"
 }
+
+# --- stateful fake storage host (tests/stubs/fakehost.sh) -------------------------------------
+
+# Everything the snapshot layer touches lives in a throwaway directory per test.
+setup_fake_host() {
+  local n fb="$BATS_TEST_TMPDIR/fakebin"
+  load_libs common pve qmconf storage findings checks_cfg checks_guest sizing snapplan hostexec inspect
+  mkdir -p "$fb"
+  for n in zfs lvs lvcreate lvchange lvremove losetup lsblk mount umount mountpoint udevadm; do
+    ln -s "$REPO_ROOT/tests/stubs/fakehost.sh" "$fb/$n"
+  done
+  export PATH="$fb:$PATH"
+  export FAKE_STATE="$BATS_TEST_TMPDIR/fake"
+  export VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/state"
+  export VM2LXC_RUN_ROOT="$BATS_TEST_TMPDIR/run"
+  export VM2LXC_WAIT_SLEEP=0 VM2LXC_WAIT_TRIES=2
+  mkdir -p "$FAKE_STATE/zfs" "$FAKE_STATE/lvm" "$FAKE_STATE/loops" "$FAKE_STATE/lsblk"
+  unset FAKE_FAIL FAKE_SLEEP_LSBLK
+}
+
+fake_enc() {
+  local x=${1//\//%2F}
+  printf '%s' "${x//@/%40}"
+}
+
+seed_zvol() { # <pool/ds>  a SOURCE zvol that must never be touched
+  printf 'kind=zvol\n' >"$FAKE_STATE/zfs/$(fake_enc "$1")"
+}
+
+seed_lv() { # <vg> <lv>  a SOURCE thin LV (active, in use by a running VM)
+  printf 'tags=\norigin=\nattr=Vwi-aotz--\nactive=1\n' >"$FAKE_STATE/lvm/$1__$2"
+}
+
+# What lsblk prints for a zfs clone device: seed_lsblk_dev <dev> <line>...
+seed_lsblk_dev() {
+  local dev=$1
+  shift
+  printf '%s\n' "$@" >"$FAKE_STATE/lsblk/$(fake_enc "$dev")"
+}
+
+# What lsblk prints for the loop device attached to <backing>; @LOOP@ is the loop name.
+seed_lsblk_backing() {
+  local backing=$1
+  shift
+  printf '%s\n' "$@" >"$FAKE_STATE/lsblk/$(fake_enc "$backing")"
+}
+
+fake_rootfs_suffix() { printf '%s\n' "$@" >"$FAKE_STATE/rootfs-suffixes"; }
+
+zfs_has() { [[ -f $FAKE_STATE/zfs/$(fake_enc "$1") ]]; }
+lv_has() { [[ -f $FAKE_STATE/lvm/${1%%/*}__${1#*/} ]]; }
+fake_events() { cat "$FAKE_STATE/events.log" 2>/dev/null || true; }
+fake_calls() { grep -E "^$1( |\$)" "$FAKE_STATE/calls.log" 2>/dev/null || true; }
+fake_mounts() { cat "$FAKE_STATE/mounts" 2>/dev/null || true; }
+fake_loops() { ls "$FAKE_STATE/loops" 2>/dev/null | wc -l | tr -d ' '; }
+
+# Assert nothing of ours remains anywhere in the fake host or the run root.
+assert_nothing_left() {
+  local left=""
+  left+=$(find "$FAKE_STATE/zfs" "$FAKE_STATE/lvm" -type f -name '*vm2lxc*' 2>/dev/null || true)
+  [[ -z $(fake_mounts) ]] || left+=$'\n'"mounts: $(fake_mounts)"
+  [[ $(fake_loops) == 0 ]] || left+=$'\n'"loop devices remain"
+  left+=$(find "$VM2LXC_RUN_ROOT" -mindepth 1 2>/dev/null || true)
+  [[ -z ${left//[[:space:]]/} ]] || {
+    echo "objects left behind:"
+    echo "$left"
+    return 1
+  }
+}
+
+# Build PLAN through the real planner from synthetic disks, no fixture host needed.
+#   plan_disks <vmid> <run> <zfspool|lvmthin> <key>:<path>:<target> ...
+plan_disks() {
+  local vmid=$1 run=$2 type=$3 spec key path target
+  shift 3
+  D_KEY=() D_KIND=() D_STORAGE=() D_VOL=() D_SIZE_MB=() D_TARGET=()
+  ST_TYPE=([st]=$type)
+  declare -gA FAKE_PATHS=()
+  for spec in "$@"; do
+    IFS=: read -r key path target <<<"$spec"
+    D_KEY+=("$key") D_KIND+=(data) D_STORAGE+=(st) D_VOL+=("vol-$key") D_SIZE_MB+=(1024) D_TARGET+=("$target")
+    FAKE_PATHS["st:vol-$key"]=$path
+  done
+  pve_volume_path() { printf '%s\n' "${FAKE_PATHS[$1]}"; }
+  snap_plan_build "$vmid" "$run"
+}

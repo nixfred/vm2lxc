@@ -14,6 +14,7 @@
 #   pvesm-status.txt          output of `pvesm status`
 #   qemu-list.json            `pvesh get /nodes/<node>/qemu`
 #   qm-config-<vmid>.txt      `qm config <vmid>`
+#   volume-paths.txt          lines "<storage:volume> <path>", what `pvesm path` prints
 #   rrddata-<vmid>-<tf>.json  `pvesh get .../rrddata --timeframe <tf>`  (tf: month|week|day)
 # A missing fixture file behaves like the command failing.
 
@@ -85,6 +86,18 @@ pve_list_vms() {
 
 pve_qm_config() {
   pve_read "qm-config-$1.txt" qm config "$1"
+}
+
+# pve_volume_path <storage:volume>: where the volume lives on this host (`pvesm path`).
+# A zfspool volume is /dev/zvol/<pool/dataset>; an lvmthin volume is /dev/<vg>/<lv>.
+pve_volume_path() {
+  [[ $1 =~ ^[A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+$ ]] || return 1
+  if pve_fixture_mode; then
+    [[ -r $VM2LXC_FIXTURE_DIR/volume-paths.txt ]] || return 1
+    awk -v v="$1" '$1 == v { print $2; f = 1 } END { exit !f }' "$VM2LXC_FIXTURE_DIR/volume-paths.txt"
+  else
+    pvesm path "$1" </dev/null
+  fi
 }
 
 # pve_rrddata <vmid> <timeframe>

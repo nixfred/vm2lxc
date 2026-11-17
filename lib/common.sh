@@ -13,9 +13,11 @@ EXIT_OK=0
 EXIT_YELLOW=10
 EXIT_RED=20
 EXIT_USAGE=64
+EXIT_DATAERR=65 # the VM's disks cannot be planned (unsupported storage, unreadable path)
 EXIT_NOINPUT=66
 EXIT_ENV=69
 EXIT_NOTIMPL=70
+EXIT_REFUSED=77 # a safety rail refused an action (see docs/snapshot-layer.html)
 
 # Global options, filled by parse_args in the entry script.
 OPT_YES=0
@@ -66,12 +68,15 @@ Usage: vm2lxc [options] <command> [args]
 Commands:
   preflight <vmid>   read-only convertibility check: verdict, reasons, sizing
   scan               rank every VM on this node by verdict and RAM saved
+  inspect <vmid>     show the plan to mount the VM's disks read-only from storage
+                     snapshots; with --yes, do it, look inside, and tear it all down
+  cleanup            tear down anything a crashed inspect left behind (lists first,
+                     removes with --yes). Only touches objects in vm2lxc's own journals
   convert <vmid>     not implemented yet
   undo <ct>          not implemented yet
-  cleanup            not implemented yet
 
 Options:
-  --yes              answer yes to prompts (for convert; accepted, unused so far)
+  --yes              really execute (inspect, cleanup); without it they only show a plan
   --answers FILE     read prompt answers from FILE (for convert; accepted, unused so far)
   --dry-run          show what would happen (preflight and scan are always read-only)
   --no-tui           plain prompts, no whiptail (accepted, unused so far)
@@ -80,10 +85,11 @@ Options:
   --version          print the version
 
 Exit codes: 0 green, 10 yellow, 20 red (preflight only); 64 bad usage;
-66 VM not found; 69 environment problem (not root, not PVE, missing tool);
-70 not implemented yet.
+65 the VM's disks cannot be planned; 66 VM not found; 69 environment problem (not root, not PVE, missing tool);
+70 not implemented yet; 77 a safety rail refused an action.
 
-Run as root on a Proxmox VE 8.x/9.x node. Nothing here changes the host: preflight
-and scan only read.
+Run as root on a Proxmox VE 8.x/9.x node. preflight and scan only read. inspect and
+cleanup create and remove storage snapshots, but only with --yes, and only objects
+named vm2lxc-... that they recorded in their own journal.
 EOF
 }
