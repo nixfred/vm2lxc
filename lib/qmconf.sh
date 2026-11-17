@@ -16,6 +16,9 @@ qmconf_parse() {
     [[ $key =~ ^[a-z][a-z0-9_-]*$ ]] || continue
     val=${line#*:}
     val=${val#"${val%%[![:space:]]*}"} # trim leading whitespace
+    # Config text is printed to a terminal: a control character (an ESC sequence in `args`, say)
+    # would be interpreted by the operator's terminal. Neutralise them once, here, at ingestion.
+    val=${val//[[:cntrl:]]/?}
     QMC[$key]=$val
   done
 }

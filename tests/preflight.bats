@@ -213,3 +213,16 @@ load helpers
   [ "$status" -eq 69 ]
   [[ $output == *"could not read storage list"* ]]
 }
+
+@test "a hostile config never puts a raw escape sequence on the terminal, in any command" {
+  local fx="$BATS_TEST_TMPDIR/fx" esc=$'\033'
+  cp -r "$FIXTURES/pve8" "$fx"
+  printf 'name: evil%s[31mname\nostype: l26\nmemory: 1024\nargs: %s]0;title%s\\ boom\nhostpci0: 0000:01:00.0%s[2J\nusb0: host=1234:5678%s[1m\nscsi0: local-zfs:vm-100-disk-0,size=8G\n' "$esc" "$esc" "$esc" "$esc" "$esc" >"$fx/qm-config-100.txt"
+  jq '(.[] | select(.vmid == 100) | .name) = "evil\u001b[31mlist"' "$fx/qemu-list.json" >"$fx/ql.json" && mv "$fx/ql.json" "$fx/qemu-list.json"
+  local cmd
+  for cmd in "preflight 100" "scan 100" "inspect 100"; do
+    # shellcheck disable=SC2086
+    VM2LXC_FIXTURE_DIR="$fx" run "$VM2LXC" $cmd
+    [[ $output != *"$esc"* ]] || { echo "raw ESC reached the terminal for: $cmd"; return 1; }
+  done
+}

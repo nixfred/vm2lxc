@@ -173,3 +173,15 @@ EOF
   [ "${N_MAC[1]}" = bc:24:11:aa:bb:02 ]
   [ "${N_TAG[1]}" = 20 ]
 }
+
+@test "control characters in config values are neutralised at ingestion (terminal-escape injection)" {
+  load_libs common qmconf
+  qmconf_parse <<<$'name: web\033[2Jclear\nargs: -x \033]0;pwned\007 -y\nhostpci0: 0000:01:00.0\033[31m,pcie=1'
+  [[ ${QMC[name]} == "web?[2Jclear" ]]
+  [[ ${QMC[args]} == "-x ?]0;pwned? -y" ]]
+  [[ ${QMC[hostpci0]} == "0000:01:00.0?[31m,pcie=1" ]]
+  local k
+  for k in "${!QMC[@]}"; do
+    [[ ${QMC[$k]} != *$'\033'* && ${QMC[$k]} != *$'\007'* ]]
+  done
+}
