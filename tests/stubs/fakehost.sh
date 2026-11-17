@@ -479,7 +479,8 @@ case $name in
           [[ $key == mp[0-9]*: ]] || continue
           mp=${val##*mp=}
           mp=${mp%%,*}
-          mkdir -p "$ctroot$mp"
+          mkdir -p "$ctroot$mp/lost+found"
+          : >"$ctroot$mp/lost+found/owned-by-the-volume" # created together with the volume; the source's must never replace it
           [[ -n ${FAKE_NO_MP_MOUNT:-} ]] || printf 'ctvol|%s|ext4|rw\n' "$ctroot$mp" >>"$S/mounts"
         done <"$ctd/conf"
         : >"$ctd/mounted"

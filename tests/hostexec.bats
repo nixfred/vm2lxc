@@ -1043,20 +1043,23 @@ ST="/stage-placeholder"
   local c=(--numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C "$rr" .)
   run hc_tar "${c[@]}"
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  run hc_tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$ct/srv/data"
+  run hc_tar --numeric-owner --xattrs --acls --exclude=./lost+found -xpf "$st/mp0.tar" -C "$ct/srv/data"
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$ct/srv/data" # without the exclude: refused
+  refused tar --numeric-owner --xattrs --acls --exclude=./etc -xpf "$st/mp0.tar" -C "$ct/srv/data"
   refused tar -cpf "$st/rootfs.tar" -C "$rr" .
   refused tar --numeric-owner --xattrs --acls --one-file-system -cpf /tmp/out.tar -C "$rr" .
   refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C / .
   refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C /etc .
   refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" -C "$rr" . /etc/shadow
   refused tar --numeric-owner --xattrs --acls --one-file-system -cpf "$st/rootfs.tar" --to-command=id -C "$rr" .
-  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C /
-  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C /etc
-  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$ct/../../etc"
-  refused tar --numeric-owner --xattrs --acls -xpf /tmp/evil.tar -C "$ct/srv"
-  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$VM2LXC_CT_ROOT/901/rootfs/srv" # another container
-  refused tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" --absolute-names -C "$ct/srv"
+  local X=(--numeric-owner --xattrs --acls --exclude=./lost+found)
+  refused tar "${X[@]}" -xpf "$st/mp0.tar" -C /
+  refused tar "${X[@]}" -xpf "$st/mp0.tar" -C /etc
+  refused tar "${X[@]}" -xpf "$st/mp0.tar" -C "$ct/../../etc"
+  refused tar "${X[@]}" -xpf /tmp/evil.tar -C "$ct/srv"
+  refused tar "${X[@]}" -xpf "$st/mp0.tar" -C "$VM2LXC_CT_ROOT/901/rootfs/srv" # another container
+  refused tar "${X[@]}" -xpf "$st/mp0.tar" --absolute-names -C "$ct/srv"
   refused tar -xpf "$st/mp0.tar" -C "$ct/srv"
 }
 
@@ -1121,7 +1124,7 @@ ST="/stage-placeholder"
   ct=$(ct_root 900)
   run hc_usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- touch "$ct/etc/cloud/cloud-init.disabled"
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  run hc_usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- tar --numeric-owner --xattrs --acls -xpf "$st/mp0.tar" -C "$ct/srv"
+  run hc_usernsexec -m u:0:100000:65536 -m g:0:100000:65536 -- tar --numeric-owner --xattrs --acls --exclude=./lost+found -xpf "$st/mp0.tar" -C "$ct/srv"
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   refused lxc-usernsexec -m u:0:0:65536 -m g:0:0:65536 -- touch "$ct/etc/x" # the real root's own ids
   refused lxc-usernsexec -m u:0:100000:4294967295 -m g:0:100000:65536 -- touch "$ct/etc/x"

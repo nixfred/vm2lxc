@@ -168,6 +168,8 @@ seed_vm101() {
   mkdir -p "$d/db/base"
   printf 'row1\n' >"$d/db/base/table.dat"
   printf 'top\n' >"$d/README"
+  mkdir -p "$d/lost+found"
+  printf 'from the source filesystem\n' >"$d/lost+found/source-marker"
 }
 
 @test "convert (lvm, two disks): the data disk becomes mp0 at the path the guest's fstab gives it, with its data" {
@@ -182,6 +184,9 @@ seed_vm101() {
   [ "$(cat "$r/srv/data/db/base/table.dat")" = row1 ]
   [ "$(cat "$r/srv/data/README")" = top ]
   [ "$(cat "$r/home/u/data.txt")" = "important data" ]
+  # the volume's own lost+found is left alone; the source filesystem's is not extracted over it
+  [ -e "$r/srv/data/lost+found/owned-by-the-volume" ]
+  [ ! -e "$r/srv/data/lost+found/source-marker" ]
   # both volumes were unmounted again, nothing else is left
   assert_nothing_left
   [ -z "$(fake_mounts)" ]

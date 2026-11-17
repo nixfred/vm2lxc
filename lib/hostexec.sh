@@ -357,14 +357,16 @@ hc_pct_create() {
 
 # tar --numeric-owner --xattrs --acls --one-file-system -cpf <staged tarball> -C <mounted guest fs> .
 #     reads the guest, writes only the staged tarball
-# tar --numeric-owner --xattrs --acls -xpf <staged tarball> -C <a verified mount point in our container>
+# tar --numeric-owner --xattrs --acls --exclude=./lost+found -xpf <staged tarball> -C <a verified mount point in our container>
+#     (the destination volume already has its own lost+found, owned by real root: an unprivileged user
+#     namespace may not touch it, so the source's is never extracted over it. Found on a real host.)
 hc_tar() {
   if [[ $# -eq 9 && $1 == --numeric-owner && $2 == --xattrs && $3 == --acls && $4 == --one-file-system &&
     $5 == -cpf && $7 == -C && $9 == . ]] && hc_under_stage "$6" && [[ $6 == *.tar ]] && hc_under_runroot "$8"; then
     return 0
   fi
-  if [[ $# -eq 7 && $1 == --numeric-owner && $2 == --xattrs && $3 == --acls && $4 == -xpf && $6 == -C ]] &&
-    hc_under_stage "$5" && [[ $5 == *.tar ]] && hc_under_ctroot "$7"; then
+  if [[ $# -eq 8 && $1 == --numeric-owner && $2 == --xattrs && $3 == --acls && $4 == --exclude=./lost+found &&
+    $5 == -xpf && $7 == -C ]] && hc_under_stage "$6" && [[ $6 == *.tar ]] && hc_under_ctroot "$8"; then
     return 0
   fi
   refuse "tar: only the staged create form and the verified extract form (got: $*)"
@@ -1245,7 +1247,7 @@ act_do_ct_copy_disk() { # <ctid> <staged tarball> <mount path in the container> 
     printf 'vm2lxc: %s is not a mount point (the extra volume is not mounted there): refusing to write into the root filesystem\n' "$mp" >&2
     return 1
   fi
-  ct_do "$priv" "$base" tar --numeric-owner --xattrs --acls -xpf "$tarball" -C "$dest"
+  ct_do "$priv" "$base" tar --numeric-owner --xattrs --acls --exclude=./lost+found -xpf "$tarball" -C "$dest"
 }
 act_undo_ct_copy_disk() { return 0; }
 
