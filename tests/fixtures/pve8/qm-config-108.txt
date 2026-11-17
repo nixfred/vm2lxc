@@ -1,0 +1,16 @@
+agent: 1
+boot: order=scsi0;ide2;net0
+cores: 1
+cpu: x86-64-v2-AES
+ide2: none,media=cdrom
+memory: 1024
+meta: creation-qemu=8.1.5,ctime=1730000000
+name: template-debian12
+net0: virtio=BC:24:11:AA:BB:6C,bridge=vmbr0,firewall=1
+numa: 0
+ostype: l26
+scsi0: local-zfs:base-108-disk-0,size=8G
+scsihw: virtio-scsi-single
+smbios1: uuid=00000000-0000-4000-8000-000000000108
+sockets: 1
+template: 1

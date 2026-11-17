@@ -1,0 +1,16 @@
+agent: 1
+boot: order=scsi0;ide2;net0
+cores: 2
+cpu: x86-64-v2-AES
+ide2: none,media=cdrom
+memory: 8192
+meta: creation-qemu=8.1.5,ctime=1730000000
+name: db-multidisk
+net0: virtio=BC:24:11:AA:BB:65,bridge=vmbr0,firewall=1
+numa: 0
+ostype: l26
+scsi0: local-lvm:vm-101-disk-0,size=20G
+scsi1: local-lvm:vm-101-disk-1,size=200G
+scsihw: virtio-scsi-single
+smbios1: uuid=00000000-0000-4000-8000-000000000101
+sockets: 1

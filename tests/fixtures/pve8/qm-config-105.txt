@@ -1,0 +1,16 @@
+agent: 1
+boot: order=scsi0;ide2;net0
+cores: 2
+cpu: x86-64-v2-AES
+ide2: none,media=cdrom
+memory: 2048
+meta: creation-qemu=8.1.5,ctime=1730000000
+name: pfsense-fw
+net0: virtio=BC:24:11:AA:BB:69,bridge=vmbr0,firewall=1
+net1: virtio=BC:24:11:AA:BB:F1,bridge=vmbr1,tag=20
+numa: 0
+ostype: other
+scsi0: local-lvm:vm-105-disk-0,size=8G
+scsihw: virtio-scsi-single
+smbios1: uuid=00000000-0000-4000-8000-000000000105
+sockets: 1

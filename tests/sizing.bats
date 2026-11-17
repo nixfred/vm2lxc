@@ -276,6 +276,14 @@ set_sz() {
   [ "${SZ[cpu_rec]}" -eq 2 ]    # ceil(1.00 x 1.25)
 }
 
+@test "cpu recommended is never below lean, even when max is close to p95" {
+  # p95 0.68 cores -> lean ceil(1.02) = 2 ; max 0.68 -> ceil(0.85) = 1 would be BELOW lean, so it is raised to 2
+  set_sz 50400 99 0 5 600 801 68 68
+  sizing_judge 4096 4
+  [ "${SZ[cpu_lean]}" -eq 2 ]
+  [ "${SZ[cpu_rec]}" -eq 2 ]
+}
+
 @test "density is capped at 100 when rows are spaced unevenly (more samples than the step predicts)" {
   local line
   # step is read from the first two rows (3600s); the rest are 60s apart, so naive

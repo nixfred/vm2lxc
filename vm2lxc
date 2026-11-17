@@ -12,6 +12,24 @@ VM2LXC_LIBDIR=${VM2LXC_LIBDIR:-$VM2LXC_ROOT/lib}
 
 # shellcheck source=lib/common.sh
 source "$VM2LXC_LIBDIR/common.sh"
+# shellcheck source=lib/pve.sh
+source "$VM2LXC_LIBDIR/pve.sh"
+# shellcheck source=lib/qmconf.sh
+source "$VM2LXC_LIBDIR/qmconf.sh"
+# shellcheck source=lib/storage.sh
+source "$VM2LXC_LIBDIR/storage.sh"
+# shellcheck source=lib/findings.sh
+source "$VM2LXC_LIBDIR/findings.sh"
+# shellcheck source=lib/checks_cfg.sh
+source "$VM2LXC_LIBDIR/checks_cfg.sh"
+# shellcheck source=lib/checks_guest.sh
+source "$VM2LXC_LIBDIR/checks_guest.sh"
+# shellcheck source=lib/sizing.sh
+source "$VM2LXC_LIBDIR/sizing.sh"
+# shellcheck source=lib/preflight.sh
+source "$VM2LXC_LIBDIR/preflight.sh"
+# shellcheck source=lib/scan.sh
+source "$VM2LXC_LIBDIR/scan.sh"
 
 # --yes, --answers, --dry-run and --no-tui are accepted now so the CLI is stable, but
 # nothing consumes them until `convert` exists. Scoped disable, not a global one.
@@ -49,8 +67,8 @@ parse_args() {
   done
 }
 
-# Stubs. They validate their arguments like the real commands will, then say so
-# and stop. They touch nothing: tests/readonly_guard.bats proves it.
+# Stubs (convert, undo, cleanup). They validate their arguments like the real commands
+# will, then say so and stop. They touch nothing: tests/readonly_guard.bats proves it.
 not_implemented() {
   printf 'vm2lxc %s: not implemented yet (this build only has read-only preflight and scan)\n' "$1" >&2
   exit "$EXIT_NOTIMPL"
@@ -72,10 +90,6 @@ cmd_cleanup() {
   (($# == 0)) || die "$EXIT_USAGE" "usage: vm2lxc cleanup"
   not_implemented cleanup
 }
-
-# Temporary until the read-only commands land (next commits).
-cmd_preflight() { not_implemented preflight; }
-cmd_scan() { not_implemented scan; }
 
 main() {
   parse_args "$@"

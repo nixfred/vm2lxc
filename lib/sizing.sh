@@ -17,7 +17,8 @@
 #   * memory choices: lean = p95 x 1.15, recommended = max(p95 x 1.25, max x 1.10),
 #     each rounded up to 64M, floors 128M / 256M, never above the current size.
 #   * CPU choices (a core limit is a cap, not a reservation): lean = p95 cores x 1.5,
-#     recommended = max cores x 1.25, rounded up, at least 1, never above current.
+#     recommended = max cores x 1.25 (but never below lean), rounded up, at least 1,
+#     never above current.
 
 # Reads a JSON array of RRD rows on stdin, prints one TSV line:
 # samples step_s span_min density_pct mem_p95_mb mem_max_mb maxmem_mb cpu_p95_c100 cpu_max_c100 maxcpu near_max
@@ -173,6 +174,7 @@ sizing_judge() {
     if ((cr < 1)); then cr=1; fi
     if ((cl > cur_cores)); then cl=$cur_cores; fi
     if ((cr > cur_cores)); then cr=$cur_cores; fi
+    if ((cr < cl)); then cr=$cl; fi # recommended is never below lean
     SZ[cpu_lean]=$cl
     SZ[cpu_rec]=$cr
   fi
@@ -215,7 +217,7 @@ disks_total_mb() {
 sizing_print() {
   local span_txt
   if [[ ${SZ[confidence]:-unavailable} == unavailable ]]; then
-    printf '  RRD history could not be read (pvesh rrddata failed for month, week and day): keep the current size.\n'
+    printf '  RRD history could not be read (pvesh get rrddata failed for month, week and day): keep the current size.\n'
     return 0
   fi
   span_txt=$(awk -v m="${SZ[span_min]}" 'BEGIN { if (m >= 1440) printf "%.1f days", m / 1440; else printf "%.1f hours", m / 60 }')
