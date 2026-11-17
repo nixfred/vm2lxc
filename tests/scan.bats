@@ -128,12 +128,25 @@ row() {
   [[ $output == *"0 green, 0 yellow, 12 red"* ]]
 }
 
-@test "scan takes no arguments" {
-  run_fx scan 100
-  [ "$status" -eq 64 ]
-}
-
 @test "scan output has no ANSI escapes when NO_COLOR is set" {
   run_fx scan
   [[ $output != *$'\033'* ]]
+}
+
+@test "scan with VM ids looks at ONLY those VMs, in ranked order, and never reads the others' config" {
+  run_fx scan 100 103 112
+  [ "$status" -eq 0 ]
+  [ "$(ranked_vmids)" = "100 112 103" ]
+  [[ $output == *"3 VMs: 2 green, 0 yellow, 1 red"* ]]
+}
+
+@test "scan with VM ids: an id that is not on the node is warned about and skipped; bad ids are usage errors" {
+  run_fx scan 100 424242
+  [ "$status" -eq 0 ]
+  [[ $output == *"VM 424242 is not on node pve-test: skipped"* ]]
+  [ "$(ranked_vmids)" = "100" ]
+  run_fx scan abc
+  [ "$status" -eq 64 ]
+  run_fx scan '100;ls'
+  [ "$status" -eq 64 ]
 }

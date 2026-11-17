@@ -67,7 +67,7 @@ Usage: vm2lxc [options] <command> [args]
 
 Commands:
   preflight <vmid>   read-only convertibility check: verdict, reasons, sizing
-  scan               rank every VM on this node by verdict and RAM saved
+  scan [vmid...]     rank the VMs on this node (or just the ones named) by verdict and RAM saved
   inspect <vmid>     show the plan to mount the VM's disks read-only from storage
                      snapshots; with --yes, do it, look inside, and tear it all down
   cleanup            tear down anything a crashed inspect left behind (lists first,

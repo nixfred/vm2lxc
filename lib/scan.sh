@@ -81,15 +81,29 @@ scan_one() {
 
 cmd_scan() {
   local list vmid name state template n=0 verdict ram saved_txt disk why color _rank _saved
-  (($# == 0)) || die "$EXIT_USAGE" "usage: vm2lxc scan"
+  local ids_json="[]" id
+  local -a wanted=()
+  # Optional VM ids restrict the scan: `vm2lxc scan 600 601`. Without them, every VM on the node.
+  for id in "$@"; do
+    vmid_valid "$id" || die "$EXIT_USAGE" "not a valid VM id: '$id' (usage: vm2lxc scan [vmid...])"
+    wanted+=("$id")
+  done
+  if ((${#wanted[@]} > 0)); then
+    ids_json=$(printf '%s\n' "${wanted[@]}" | jq -R 'tonumber' | jq -s '.')
+  fi
   host_context_load
   list=$(pve_list_vms) || die "$EXIT_ENV" "could not list VMs on node $PVE_NODE_NAME"
   jq -e 'type == "array"' <<<"$list" >/dev/null 2>&1 || die "$EXIT_ENV" "the VM list from node $PVE_NODE_NAME is not valid JSON"
+  for id in "${wanted[@]}"; do
+    jq -e --argjson id "$id" 'any(.[]; .vmid == $id)' <<<"$list" >/dev/null 2>&1 ||
+      warn "VM $id is not on node $PVE_NODE_NAME: skipped"
+  done
   SCAN_ROWS=() SCAN_GREEN=0 SCAN_YELLOW=0 SCAN_RED=0 SCAN_UNREADABLE=0 SCAN_SAVED_MB=0
   while IFS=$'\t' read -r vmid name state template; do
     [[ -n $vmid ]] || continue
     scan_one "$vmid" "$name" "$state" "$template"
-  done < <(jq -r 'sort_by(.vmid) | .[] | [.vmid, (.name // "-"), (.status // "-"), (.template // 0)] | @tsv' <<<"$list")
+  done < <(jq -r --argjson ids "$ids_json" \
+    'sort_by(.vmid) | .[] | select(($ids | length) == 0 or (.vmid as $v | $ids | index($v) != null)) | [.vmid, (.name // "-"), (.status // "-"), (.template // 0)] | @tsv' <<<"$list")
 
   printf '%svm2lxc scan%s\n' "$C_BLD" "$C_RST"
   printf '  node %s | PVE %s | %s\n\n' "$PVE_NODE_NAME" "${PVE_VERSION:-unknown}" "$(pve_mode_label)"

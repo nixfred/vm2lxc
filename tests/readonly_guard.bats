@@ -160,6 +160,16 @@ live() {
   [ "$(sed 's/live host/MODE/' <<<"$live_out")" = "$(sed 's/FIXTURE MODE (canned data, no real host)/MODE/' <<<"$output")" ]
 }
 
+@test "dynamic: 'scan 100 103' reads the config and history of those VMs only, no other VM is touched" {
+  live --node pve-test scan 100 103
+  [ "$status" -eq 0 ]
+  grep -q '^qm config 100$' "$STUB_LOG"
+  grep -q '^qm config 103$' "$STUB_LOG"
+  [ "$(grep -c '^qm config' "$STUB_LOG")" -eq 2 ]
+  refute_log 'qemu/(101|102|104|105|106|107|108|112|113|114)/rrddata'
+  refute_log '^REFUSED'
+}
+
 @test "dynamic: without --node the node comes from the hostname" {
   live preflight 100
   [ "$status" -eq 0 ]
