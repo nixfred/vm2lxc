@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# vm2lxc: convert a QEMU VM on a Proxmox VE host into an LXC container, safely.
+#
+# WORK IN PROGRESS. This slice ships the read-only `preflight` and `scan`.
+# `convert`, `undo` and `cleanup` are stubs that only say "not implemented".
+# A plain deterministic script: no AI inside the tool.
+set -euo pipefail
+
+VM2LXC_SELF=$(readlink -f "${BASH_SOURCE[0]}")
+VM2LXC_ROOT=${VM2LXC_SELF%/*}
+VM2LXC_LIBDIR=${VM2LXC_LIBDIR:-$VM2LXC_ROOT/lib}
+
+# shellcheck source=lib/common.sh
+source "$VM2LXC_LIBDIR/common.sh"
+
+# --yes, --answers, --dry-run and --no-tui are accepted now so the CLI is stable, but
+# nothing consumes them until `convert` exists. Scoped disable, not a global one.
+# shellcheck disable=SC2034
+parse_args() {
+  POSITIONAL=()
+  while (($#)); do
+    case $1 in
+      --yes) OPT_YES=1 ;;
+      --dry-run) OPT_DRY_RUN=1 ;;
+      --no-tui) OPT_NO_TUI=1 ;;
+      --answers)
+        (($# >= 2)) || die "$EXIT_USAGE" "--answers needs a FILE"
+        OPT_ANSWERS=$2
+        shift
+        ;;
+      --answers=*) OPT_ANSWERS=${1#*=} ;;
+      --node)
+        (($# >= 2)) || die "$EXIT_USAGE" "--node needs a NAME"
+        OPT_NODE=$2
+        shift
+        ;;
+      --node=*) OPT_NODE=${1#*=} ;;
+      -h | --help) OPT_HELP=1 ;;
+      --version) OPT_VERSION=1 ;;
+      --)
+        shift
+        POSITIONAL+=("$@")
+        break
+        ;;
+      -*) die "$EXIT_USAGE" "unknown option: $1 (try --help)" ;;
+      *) POSITIONAL+=("$1") ;;
+    esac
+    shift
+  done
+}
+
+# Stubs. They validate their arguments like the real commands will, then say so
+# and stop. They touch nothing: tests/readonly_guard.bats proves it.
+not_implemented() {
+  printf 'vm2lxc %s: not implemented yet (this build only has read-only preflight and scan)\n' "$1" >&2
+  exit "$EXIT_NOTIMPL"
+}
+
+cmd_convert() {
+  (($# == 1)) || die "$EXIT_USAGE" "usage: vm2lxc convert <vmid>"
+  vmid_valid "$1" || die "$EXIT_USAGE" "not a valid VM id: '$1' (expected a number, 100 or higher)"
+  not_implemented convert
+}
+
+cmd_undo() {
+  (($# == 1)) || die "$EXIT_USAGE" "usage: vm2lxc undo <ct>"
+  vmid_valid "$1" || die "$EXIT_USAGE" "not a valid container id: '$1' (expected a number, 100 or higher)"
+  not_implemented undo
+}
+
+cmd_cleanup() {
+  (($# == 0)) || die "$EXIT_USAGE" "usage: vm2lxc cleanup"
+  not_implemented cleanup
+}
+
+# Temporary until the read-only commands land (next commits).
+cmd_preflight() { not_implemented preflight; }
+cmd_scan() { not_implemented scan; }
+
+main() {
+  parse_args "$@"
+  if ((OPT_HELP)); then
+    usage
+    exit "$EXIT_OK"
+  fi
+  if ((OPT_VERSION)); then
+    printf 'vm2lxc %s\n' "$VM2LXC_VERSION"
+    exit "$EXIT_OK"
+  fi
+  local cmd=${POSITIONAL[0]:-}
+  if [[ -z $cmd ]]; then
+    usage >&2
+    exit "$EXIT_USAGE"
+  fi
+  case $cmd in
+    preflight) cmd_preflight "${POSITIONAL[@]:1}" ;;
+    scan) cmd_scan "${POSITIONAL[@]:1}" ;;
+    convert) cmd_convert "${POSITIONAL[@]:1}" ;;
+    undo) cmd_undo "${POSITIONAL[@]:1}" ;;
+    cleanup) cmd_cleanup "${POSITIONAL[@]:1}" ;;
+    help) usage ;;
+    *) die "$EXIT_USAGE" "unknown command: $cmd (try --help)" ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

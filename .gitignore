@@ -1,0 +1,4 @@
+# run logs and local scratch, never committed
+*.log
+*.tmp
+/scratch/
