@@ -236,22 +236,36 @@ debian_guest() {
   has_finding red guest-disk-layers "partition on the disk"
 }
 
-@test "iscsi-multipath: configured targets or a real multipath.conf are red" {
+@test "iscsi-multipath: discovered targets, a customised multipath.conf, or an fstab mount on a multipath map are red" {
   run_check iscsi_multipath
   no_finding guest-iscsi-multipath
-  gput etc/multipath.conf $'defaults {\n  user_friendly_names yes\n}\n'
-  run_check iscsi_multipath
-  has_finding red guest-iscsi-multipath "configured"
-  fresh
   mkdir -p "$G/etc/iscsi/nodes/iqn.x"
   run_check iscsi_multipath
-  has_finding red guest-iscsi-multipath "configured"
+  has_finding red guest-iscsi-multipath "iSCSI targets are discovered"
+  fresh
+  gput etc/multipath.conf $'defaults {\n  user_friendly_names yes\n}\nmultipaths {\n  multipath {\n    wwid 3600\n  }\n}\n'
+  run_check iscsi_multipath
+  has_finding red guest-iscsi-multipath "multipath.conf defines multipaths"
+  fresh
+  gput etc/multipath.conf $'blacklist_exceptions {\n  wwid 36\n}\n'
+  run_check iscsi_multipath
+  has_finding red guest-iscsi-multipath "blacklist_exceptions"
+  fresh
+  gput etc/fstab $'/dev/mapper/mpatha1 /data ext4 defaults,_netdev 0 2\n'
+  run_check iscsi_multipath
+  has_finding red guest-iscsi-multipath "fstab mounts /dev/mapper/mpatha1"
+  fresh
+  gput etc/fstab $'/dev/disk/by-path/ip-10.0.0.9:3260-iscsi-iqn.2020-01.x:t-lun-0-part1 /mnt ext4 _netdev 0 2\n'
+  run_check iscsi_multipath
+  has_finding red guest-iscsi-multipath "iscsi"
 }
 
-@test "iscsi-multipath: the packages alone (Ubuntu cloud images ship them) are info, never red; an all-comment multipath.conf is not configuration" {
+@test "iscsi-multipath: the STOCK Ubuntu cloud image (packages, default multipath.conf, no targets) is info, never red" {
   gput var/lib/dpkg/status $'Package: open-iscsi\nStatus: install ok installed\n\nPackage: multipath-tools\nStatus: install ok installed\n'
-  gput etc/multipath.conf $'# an example only\n\n'
-  mkdir -p "$G/etc/iscsi/nodes"
+  gput etc/multipath.conf $'# stock\ndefaults {\n    user_friendly_names yes\n}\n'
+  gput etc/fstab $'LABEL=cloudimg-rootfs / ext4 discard,errors=remount-ro 0 1\nLABEL=UEFI /boot/efi vfat umask=0077 0 1\n'
+  mkdir -p "$G/etc/iscsi"
+  : >"$G/etc/iscsi/initiatorname.iscsi"
   run_check iscsi_multipath
   has_finding info guest-iscsi-multipath "open-iscsi multipath-tools"
   [ "$VERDICT" = green ]
