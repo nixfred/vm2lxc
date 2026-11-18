@@ -10,7 +10,9 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
 - **The D7 menu is built** (`vm2lxc`, or `vm2lxc menu`): whiptail with a plain-prompt fallback, a one-screen review hub,
   a progress bar, and `--answers FILE` for unattended runs. It is tested against fakes and **not yet driven by a person
   on a real host**. See "The menu" below.
-- **448 tests pass, 0 failed, 1 skipped on larry** (no `strace` here; 0 skipped where it is installed), shellcheck clean. Every safety rail has a test that goes red when the rail is
+- **USB passthrough is mapped (R39)**: `convert` gives the container the raw USB node and any `ttyUSB`/`ttyACM` port of a
+  device it finds exactly once on the host; it maps nothing it is unsure of and says so three times. Fake host only.
+- **477 tests pass, 0 failed, 1 skipped on larry** (no `strace` here; 0 skipped where it is installed), shellcheck clean. Every safety rail has a test that goes red when the rail is
   reverted (more than 80 reversals over the project).
 - **Run for real** on a Proxmox VE 9.2.28 host (LVM-thin) against the four disposable test VMs 600-603, each converted
   into a container and undone again: Debian 12 cloud image, a two-disk Debian, Alpine, Ubuntu 24.04 with Tailscale.
@@ -64,10 +66,23 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
 - The container keeps the guest's kernel and initramfs packages (unused). Staging needs free space in `/var/tmp`
   about the size of the guest. One filesystem per extra disk. Everything written in the container after the
   conversion is lost by `undo`.
+- **USB mapping (R39) has only run against the fake host.** No real USB device has been mapped into a real container; the
+  sysfs reader was run read-only on hex and parsed its four real devices. Bus/device numbers change on replug; a serial
+  port keeps the host's name inside the container.
 - **The menu has only run against fakes** (a scripted whiptail, a fake host). The real whiptail in a real terminal, the
   terminal-size fallback and the look of the screens are unverified.
 - Not built: `--live` two-pass copy (D2), the sizing choice (D8), the verified vzdump backup
   (D9), the soak period (D10), the post-conversion compare (D12).
+
+## USB passthrough (R39)
+
+Fred, 2026-11-18: "add USB mapping to the system". Code: `lib/usbmap.sh` (find and resolve), `usb_parse_spec` in
+`lib/qmconf.sh`, `pve_usb_inventory` in `lib/pve.sh` (reads sysfs, fixture file `usb-devices.txt`), `conv_decide` and
+`conv_print_usb` in `lib/convert.sh`, `RE_CT_DEV` in `lib/hostexec.sh` (`--devN` accepts only `/dev/bus/usb/BBB/DDD` and
+`/dev/ttyUSBn|ttyACMn`, no options). Looked up after the VM stops, because QEMU holds the device while it runs. Exactly one
+match maps; none, two identical, `mapping=` or unknown map nothing and are reported in the plan, the notes and the summary.
+Tests: 29 new (`tests/usbmap.bats`, USB cases in `convert.bats`, `checks.bats`, `hostexec.bats`); 15 reversals, all caught.
+Read from hex's own PVE 9.2.28 code: a dev entry is owned by the container's root, mode 0660, mapped for unprivileged.
 
 ## The menu (D7)
 

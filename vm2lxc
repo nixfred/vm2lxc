@@ -16,6 +16,8 @@ source "$VM2LXC_LIBDIR/common.sh"
 source "$VM2LXC_LIBDIR/pve.sh"
 # shellcheck source=lib/qmconf.sh
 source "$VM2LXC_LIBDIR/qmconf.sh"
+# shellcheck source=lib/usbmap.sh
+source "$VM2LXC_LIBDIR/usbmap.sh"
 # shellcheck source=lib/storage.sh
 source "$VM2LXC_LIBDIR/storage.sh"
 # shellcheck source=lib/findings.sh

@@ -1036,6 +1036,34 @@ ST="/stage-placeholder"
   refused pct create 900 "$ar" --hostname
 }
 
+@test "allowlist pct create --devN (R39): only a USB bus node or a ttyUSB/ttyACM port, no options" {
+  conv_bind
+  local ar="$VM2LXC_STAGE_ROOT/rtest01/rootfs.tar"
+  run hc_pct create 900 "$ar" --dev0 /dev/bus/usb/001/004 --dev1 /dev/ttyUSB0 --dev2 /dev/ttyACM12 --dev15 /dev/bus/usb/010/127
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  refused pct create 900 "$ar" --dev0 /dev/sda
+  refused pct create 900 "$ar" --dev0 /dev/mem
+  refused pct create 900 "$ar" --dev0 /dev/nvme0n1
+  refused pct create 900 "$ar" --dev0 /dev/kvm
+  refused pct create 900 "$ar" --dev0 /dev/dri/card0
+  refused pct create 900 "$ar" --dev0 /dev/bus/usb/001/004/
+  refused pct create 900 "$ar" --dev0 /dev/bus/usb/1/4
+  refused pct create 900 "$ar" --dev0 /dev/bus/usb/001
+  refused pct create 900 "$ar" --dev0 /dev/bus/usb/../../sda
+  refused pct create 900 "$ar" --dev0 /dev/bus/usb/001/../004
+  refused pct create 900 "$ar" --dev0 /dev/ttyS0
+  refused pct create 900 "$ar" --dev0 /dev/tty0
+  refused pct create 900 "$ar" --dev0 /dev/ttyUSB
+  refused pct create 900 "$ar" --dev0 /dev/ttyUSB0/x
+  refused pct create 900 "$ar" --dev0 '/dev/bus/usb/001/004,mode=0666'
+  refused pct create 900 "$ar" --dev0 '/dev/bus/usb/001/004,uid=0,gid=0'
+  refused pct create 900 "$ar" --dev0 'path=/dev/bus/usb/001/004'
+  refused pct create 900 "$ar" --dev0 '/dev/bus/usb/001/004;id'
+  refused pct create 900 "$ar" --dev0 "$(printf '/dev/bus/usb/001/004\n/dev/sda')"
+  refused pct create 900 "$ar" --dev100 /dev/bus/usb/001/004
+  refused pct create 900 "$ar" --device0 /dev/bus/usb/001/004
+}
+
 @test "allowlist tar: the create form reads a mounted guest into a staged tarball; the extract form writes only inside our container" {
   conv_bind
   local st="$VM2LXC_STAGE_ROOT/rtest01" rr="$VM2LXC_RUN_ROOT/rtest01/scsi0/p1" ct

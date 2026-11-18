@@ -87,8 +87,19 @@ check_cfg_hostpci() {
 check_cfg_usb() {
   local k
   while IFS= read -r k; do
-    [[ ${QMC[$k]} == *spice* ]] && continue # SPICE redirection, not a physical device
-    finding yellow usb vm "$k is USB passthrough (${QMC[$k]%%,*}): not carried over automatically, the container would need the device passed through by hand"
+    usb_parse_spec "${QMC[$k]}"
+    case $USB_KIND in
+      spice) continue ;; # SPICE redirection, not a physical device
+      vidpid | port)
+        finding yellow usb vm "$k is USB passthrough (${QMC[$k]%%,*}): convertible; vm2lxc maps the device into the container (its USB node, and its serial port if the host driver makes one) when it finds exactly one match on the host after the VM has stopped, and says so loudly when it cannot"
+        ;;
+      mapping)
+        finding yellow usb vm "$k is USB passthrough (${QMC[$k]%%,*}): a cluster resource mapping, which vm2lxc does not resolve; the container would need the device passed through by hand"
+        ;;
+      *)
+        finding yellow usb vm "$k is USB passthrough (${QMC[$k]%%,*}): not carried over automatically, the container would need the device passed through by hand"
+        ;;
+    esac
   done < <(qmc_keys '^usb[0-9]+$')
 }
 

@@ -16,6 +16,7 @@
 #   qm-config-<vmid>.txt      `qm config <vmid>`
 #   volume-paths.txt          lines "<storage:volume> <path>", what `pvesm path` prints
 #   rrddata-<vmid>-<tf>.json  `pvesh get .../rrddata --timeframe <tf>`  (tf: month|week|day)
+#   usb-devices.txt           what pve_usb_inventory prints (see there)
 # A missing fixture file behaves like the command failing.
 
 pve_fixture_mode() {
@@ -133,6 +134,40 @@ pve_rrddata() {
   esac
   pve_read "rrddata-$vmid-$tf.json" \
     pvesh get "/nodes/$PVE_NODE_NAME/qemu/$vmid/rrddata" --timeframe "$tf" --output-format json
+}
+
+# pve_usb_inventory: the USB devices the host kernel has enumerated, read from sysfs (no command is run).
+#   dev <sysname> <vid> <pid> <busnum> <devnum> <bound>   one per device; sysname is the kernel's (1-2.3),
+#                                                          bound = 1 when a host driver is attached to an interface
+#   tty <sysname> <ttyUSB0|ttyACM0>                       a serial port the host driver made for that device
+# Interfaces (1-2:1.0) and root hubs (usb1) are skipped. Every value is checked against a strict pattern.
+pve_usb_inventory() {
+  local d n vid pid bus dev bound t
+  if pve_fixture_mode; then
+    [[ -r $VM2LXC_FIXTURE_DIR/usb-devices.txt ]] || return 1
+    cat -- "$VM2LXC_FIXTURE_DIR/usb-devices.txt"
+    return
+  fi
+  for d in /sys/bus/usb/devices/*; do
+    [[ -d $d ]] || continue
+    n=${d##*/}
+    [[ $n =~ ^[0-9]{1,3}-[0-9]{1,3}(\.[0-9]{1,3})*$ ]] || continue
+    vid="" pid="" bus="" dev=""
+    read -r vid <"$d/idVendor" 2>/dev/null || true
+    read -r pid <"$d/idProduct" 2>/dev/null || true
+    read -r bus <"$d/busnum" 2>/dev/null || true
+    read -r dev <"$d/devnum" 2>/dev/null || true
+    [[ $vid =~ ^[0-9a-f]{4}$ && $pid =~ ^[0-9a-f]{4}$ && $bus =~ ^[0-9]{1,3}$ && $dev =~ ^[0-9]{1,3}$ ]] || continue
+    bound=0
+    for t in "$d":*/driver; do
+      if [[ -e $t ]]; then bound=1; fi
+    done
+    printf 'dev %s %s %s %s %s %s\n' "$n" "$vid" "$pid" "$bus" "$dev" "$bound"
+    for t in "$d":*/tty/ttyACM* "$d":*/ttyUSB*; do
+      [[ -e $t ]] || continue
+      printf 'tty %s %s\n' "$n" "${t##*/}"
+    done
+  done
 }
 
 # Parse "pve-manager/8.2.4/faa83925c9641325 (running kernel: 6.8.8-2-pve)" -> "8.2.4"

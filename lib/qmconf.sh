@@ -56,6 +56,34 @@ csv_opt() {
   return 1
 }
 
+# usb_parse_spec <value of a usbN key>: what kind of USB passthrough it is.
+#   sets USB_KIND  vidpid | port | spice | mapping | unknown
+#        USB_VID USB_PID (lower-case hex, for vidpid), USB_PORT (e.g. 1-2.3, for port), USB_MAP (mapping id)
+# Proxmox writes "host=0bda:8153", "host=1-2.3", "spice", "mapping=NAME", each with optional ",usb3=1".
+usb_parse_spec() {
+  local IFS=, part host=""
+  local -a parts
+  USB_KIND=unknown USB_VID="" USB_PID="" USB_PORT="" USB_MAP=""
+  read -ra parts <<<"$1"
+  for part in "${parts[@]}"; do
+    case $part in
+      host=*) host=${part#host=} ;;
+      mapping=*) USB_MAP=${part#mapping=} ;;
+      *=*) ;;
+      *) if [[ -z $host ]]; then host=$part; fi ;;
+    esac
+  done
+  if [[ $host == spice ]]; then
+    USB_KIND=spice
+  elif [[ $host =~ ^([0-9A-Fa-f]{4}):([0-9A-Fa-f]{4})$ ]]; then
+    USB_KIND=vidpid USB_VID=${BASH_REMATCH[1],,} USB_PID=${BASH_REMATCH[2],,}
+  elif [[ $host =~ ^[0-9]{1,3}-[0-9]{1,3}(\.[0-9]{1,3})*$ ]]; then
+    USB_KIND=port USB_PORT=$host
+  elif [[ -z $host && $USB_MAP =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+    USB_KIND=mapping
+  fi
+}
+
 # size_to_mb 32G -> 32768. K rounds up. A bare number is bytes. rc 1 if unparseable.
 size_to_mb() {
   local n u

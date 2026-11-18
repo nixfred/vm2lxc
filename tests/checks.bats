@@ -99,6 +99,27 @@ setup() {
   no_finding usb
 }
 
+@test "USB passthrough wording follows the kind (R39): mapped by vm2lxc, a cluster mapping is not, an odd value stays by hand" {
+  run_cfg_checks_on < <(cfg_with 'usb0: host=0bda:8153,usb3=1')
+  [ "$VERDICT" = yellow ]
+  has_finding yellow usb "vm2lxc maps the device into the container"
+  has_finding yellow usb "exactly one match on the host after the VM has stopped"
+  run_cfg_checks_on < <(cfg_with 'usb0: host=1-2.3')
+  has_finding yellow usb "vm2lxc maps the device into the container"
+  run_cfg_checks_on < <(cfg_with 'usb0: mapping=zigbee')
+  [ "$VERDICT" = yellow ]
+  has_finding yellow usb "a cluster resource mapping, which vm2lxc does not resolve"
+  run_cfg_checks_on < <(cfg_with 'usb0: host=banana')
+  has_finding yellow usb "not carried over automatically"
+}
+
+@test "USB passthrough never makes a VM red by itself (a PCI device does)" {
+  run_cfg_checks_on < <(cfg_with 'usb0: host=0bda:8153' 'usb1: mapping=x' 'usb2: host=1-2')
+  [ "$VERDICT" = yellow ]
+  run_cfg_checks_on < <(cfg_with 'usb0: host=0bda:8153' 'hostpci0: 0000:01:00.0')
+  [ "$VERDICT" = red ]
+}
+
 @test "virtiofs share, custom args and hookscript are each yellow" {
   run_cfg_checks_on < <(cfg_with 'virtiofs0: shared-dir,cache=auto' 'args: -device vfio-pci,host=01:00.0' 'hookscript: local:snippets/hook.pl')
   [ "$VERDICT" = yellow ]

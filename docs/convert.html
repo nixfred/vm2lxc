@@ -84,6 +84,7 @@ the only things ever done to it are a graceful shutdown and <code>onboot 0</code
 <tr><td>R27</td><td><b>Extra-disk data goes only into a verified mount point.</b> The destination is resolved chroot-style and must pass <code>mountpoint -q</code>; otherwise the write would silently fill the root filesystem. The volume's own <code>lost+found</code> is never replaced.</td><td><code>act_do_ct_copy_disk</code>, <code>hc_tar</code></td></tr>
 <tr><td>R28</td><td><b>undo is as careful as convert.</b> It stops and destroys the container only if it carries this run's tag; it starts the VM only if it was running before, and never while the container runs. A committed conversion is not mistaken for a crash by <code>cleanup</code>.</td><td><code>act_undo_ct_create</code>, <code>act_undo_vm_stop</code>, journal KEPT/COMMITTED</td></tr>
 <tr><td>R29</td><td><b>No silent data loss.</b> A second data filesystem on the boot disk that the guest does not mount at <code>/boot</code> or <code>/boot/efi</code> refuses the conversion (nothing changed, VM restarted). An extra disk with more than one mountable filesystem is refused too.</td><td><code>conv_decide</code></td></tr>
+<tr><td>R39</td><td><b>USB devices are mapped only when they are certain.</b> Each <code>usbN</code> setting is looked up on the host <i>after</i> the VM has stopped (QEMU has let go of the device). Exactly one match by vendor:product, or the named port, gives a <code>devN</code> entry for the raw USB node and for its <code>ttyUSB</code>/<code>ttyACM</code> port if the host driver made one. No match, two identical devices, a cluster <code>mapping=</code> or an unknown setting maps <b>nothing</b>, never a guess, and is said three times: in the plan, in the notes and in the final summary. <code>pct create</code> accepts <code>--devN</code> only for <code>/dev/bus/usb/BBB/DDD</code> and <code>/dev/ttyUSBn|ttyACMn</code>, with no options. Proxmox gives the node to the container's root, mode 0660 (read from PVE 9.2's own code).</td><td><code>usb_resolve</code>, <code>conv_decide</code>, <code>RE_CT_DEV</code> in <code>hc_pct_create</code></td></tr>
 </table>
 
 <h2>5. Failure matrix (each is a test; the fake injects the failure)</h2>
@@ -129,10 +130,11 @@ After every run the host was compared with a baseline: no snapshot LV, no loop d
 <li><b>Tailscale:</b> the state is copied, the VM is set not to autostart, and the output warns loudly, but <code>undo</code> does not copy state back into the VM.</li>
 <li>The container keeps the guest's kernel and initramfs packages (unused). Staging needs free space in <code>/var/tmp</code> about the size of the guest.</li>
 <li>One filesystem per extra disk; guest LVM, LUKS and RAID are refused (RED).</li>
+<li><b>USB mapping (R39) has only run against the fake host</b> (and its sysfs reader against hex's real sysfs, read-only). No real USB device has been mapped into a real container yet. The bus/device number in <code>/dev/bus/usb/BBB/DDD</code> changes when the device is replugged, so the entry then needs a fresh <code>pct set</code>. Inside the container a serial port keeps the <i>host's</i> name (<code>ttyUSB1</code>, not necessarily the <code>ttyUSB0</code> the guest used). PCI passthrough stays RED.</li>
 </ul>
 
 <script type="application/json" id="state">
-{"doc":"convert","version":1,"date":"2026-11-17","status":"verified on PVE 9.2.28 lvmthin with 4 guest types; zfs fake only","rails":["R22","R23","R24","R25","R26","R27","R28","R29"],"real_host_guests":["debian12-cloudimg","debian12-two-disk","alpine-3.24","ubuntu-24.04-tailscale"],"real_host_bugs_found":3,"source_disk_sha256_identical":true}
+{"doc":"convert","version":1,"date":"2026-11-17","status":"verified on PVE 9.2.28 lvmthin with 4 guest types; zfs fake only","rails":["R22","R23","R24","R25","R26","R27","R28","R29","R39"],"real_host_guests":["debian12-cloudimg","debian12-two-disk","alpine-3.24","ubuntu-24.04-tailscale"],"real_host_bugs_found":3,"source_disk_sha256_identical":true}
 </script>
 </main>
 </body>

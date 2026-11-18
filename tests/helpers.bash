@@ -120,7 +120,7 @@ make_rrd() {
 # Everything the snapshot layer touches lives in a throwaway directory per test.
 setup_fake_host() {
   local n fb="$BATS_TEST_TMPDIR/fakebin"
-  load_libs common pve qmconf storage findings checks_cfg guestfs checks_guest sizing snapplan hostexec inspect convert
+  load_libs common pve qmconf usbmap storage findings checks_cfg guestfs checks_guest sizing snapplan hostexec inspect convert
   mkdir -p "$fb"
   for n in zfs lvs lvcreate lvchange lvremove losetup lsblk mount umount mountpoint udevadm qm pct blkid lxc-usernsexec; do
     ln -s "$REPO_ROOT/tests/stubs/fakehost.sh" "$fb/$n"

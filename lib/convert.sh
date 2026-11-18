@@ -32,6 +32,7 @@ CONV_NICS=()  # "netN|bridge|mac|tag|firewall"
 CONV_MPS=()   # "key|mpN|storage|size_gb"
 CONV_OPTS=()  # pct create options after the archive, as '--name' 'value' pairs
 CONV_NOTES=() # things worth printing
+CONV_USB_LOST=() # usbN settings that could NOT be mapped, repeated in the final summary (R39: never silent)
 
 # conv_hostname <vm name> <ctid>: an RFC 1123 label from the VM's name
 conv_hostname() {
@@ -139,7 +140,7 @@ conv_fs_ids() {
 conv_inputs() {
   local vmid=$1 run=$2 i key kind size_mb boot_i=-1 n_mp=0 mpn
   PLAN_ERR=""
-  CONV_NICS=() CONV_MPS=() CONV_OPTS=() CONV_NOTES=()
+  CONV_NICS=() CONV_MPS=() CONV_OPTS=() CONV_NOTES=() CONV_USB_LOST=()
   CONV_PRIV=$OPT_PRIVILEGED
   CONV_MAPBASE=$(conv_subuid_base)
 
@@ -306,12 +307,28 @@ conv_decide() {
     plan_mp+=("$mpn|$mnt|$path")
   done
 
+  # USB passthrough -> device nodes (R39). The VM is stopped by now, so the host sees the device again.
+  local opts_dev=() ndev=0 ukey unode
+  while IFS= read -r ukey; do
+    [[ -n $ukey ]] || continue
+    if usb_resolve "${QMC[$ukey]}"; then
+      for unode in "${USB_NODES[@]}"; do
+        opts_dev+=("--dev$ndev" "$unode") # past dev99 the allowlist refuses, which fails safe (Proxmox allows usb0-usb4)
+        ndev=$((ndev + 1))
+      done
+      CONV_NOTES+=("$ukey (${QMC[$ukey]%%,*}): $USB_NOTE")
+    elif [[ $USB_KIND != spice ]]; then
+      CONV_USB_LOST+=("$ukey (${QMC[$ukey]%%,*}): $USB_NOTE")
+      CONV_NOTES+=("$ukey (${QMC[$ukey]%%,*}) was NOT mapped: $USB_NOTE")
+    fi
+  done < <(qmc_keys '^usb[0-9]+$')
+
   if conv_netplan_mac_match "$GUEST_ROOT"; then
     CONV_NOTES+=("the guest's netplan matches the NIC by MAC address (cloud-init does this); a container's veth has no permanent MAC, so the copy's netplan is changed to match by interface name (originals kept as *.vm2lxc-orig)")
   fi
   conv_tags_and_desc "$vmid" "$run"
   CONV_OPTS=(--hostname "$CONV_HOSTNAME" --memory "$CONV_MEM" --cores "$CONV_CORES" --rootfs "$CONV_BOOT_STORAGE:$CONV_BOOT_GB")
-  CONV_OPTS+=("${opts_mp[@]}" "${opts_net[@]}")
+  CONV_OPTS+=("${opts_mp[@]}" "${opts_net[@]}" "${opts_dev[@]}")
   CONV_OPTS+=(--unprivileged "$((1 - CONV_PRIV))" --ostype unmanaged --features nesting=1 --onboot 0 --start 0 --arch amd64
     --tags "$CONV_TAGS" --description "$CONV_DESC")
   CONV_NOTES+=("guest OS ${GUEST_OS_PRETTY:-unknown} (detected ostype $GUEST_OSTYPE): created as unmanaged, so Proxmox does not rewrite the guest's own network config")
@@ -352,7 +369,32 @@ conv_print_inputs() {
     printf '  %s: the VM'"'"'s exact MAC %s on bridge %s%s (interface name taken from the guest'"'"'s network config)\n' \
       "$key" "$sto" "$mpn" "${gb:+, VLAN $gb}"
   done
+  conv_print_usb
   printf '\n'
+}
+
+# conv_print_usb: what will happen to each usbN setting, and whether the device is on the host right now
+conv_print_usb() {
+  local ukey why
+  while IFS= read -r ukey; do
+    [[ -n $ukey ]] || continue
+    usb_parse_spec "${QMC[$ukey]}"
+    case $USB_KIND in
+      spice) continue ;;
+      vidpid | port)
+        if usb_find "${QMC[$ukey]}"; then
+          printf '  %s: %s is on the host now (port %s); once the VM has stopped it is mapped into the container as device entries (USB node, and its serial port if the host driver makes one)\n' \
+            "$ukey" "${QMC[$ukey]%%,*}" "$USB_SYS"
+        else
+          printf '  %s: %s will NOT be mapped unless that changes before the VM stops: %s\n' "$ukey" "${QMC[$ukey]%%,*}" "$USB_NOTE"
+        fi
+        ;;
+      *)
+        usb_find "${QMC[$ukey]}" || why=$USB_NOTE
+        printf '  %s: %s will NOT be mapped: %s\n' "$ukey" "${QMC[$ukey]%%,*}" "$why"
+        ;;
+    esac
+  done < <(qmc_keys '^usb[0-9]+$')
 }
 
 conv_print_phase_b() {
@@ -500,6 +542,11 @@ conv_summary() {
   else
     printf '  The container is STOPPED. VM %s is stopped (and set not to start at boot): start the container to cut over:\n' "$vmid"
     printf '    pct start %s\n' "$CONV_CTID"
+  fi
+  if ((${#CONV_USB_LOST[@]} > 0)); then
+    local l
+    printf '  USB NOT carried over (the container cannot use these devices until you add them, for example "pct set %s --dev0 /dev/bus/usb/BBB/DDD"):\n' "$CONV_CTID"
+    for l in "${CONV_USB_LOST[@]}"; do printf '    - %s\n' "$l"; done
   fi
   printf '  To go back:  vm2lxc undo %s --yes   (destroys the container, starts the VM again)\n' "$CONV_CTID"
   printf '  NEVER start VM %s while container %s runs: they share one MAC address.\n' "$vmid" "$CONV_CTID"

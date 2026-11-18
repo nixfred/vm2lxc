@@ -106,6 +106,7 @@ RE_CT_NAME='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
 RE_STORAGE_SIZE='^[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]{1,6}$'
 RE_CT_MP='^[A-Za-z0-9][A-Za-z0-9_.-]*:[0-9]{1,6},mp=/[A-Za-z0-9_./-]*$'
 RE_CT_NET='^name=[A-Za-z0-9_.-]{1,15},bridge=[A-Za-z0-9_.-]{1,15},hwaddr=([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2},type=veth(,tag=[0-9]{1,4})?(,firewall=[01])?$'
+RE_CT_DEV='^/dev/(bus/usb/[0-9]{3}/[0-9]{3}|tty(USB|ACM)[0-9]{1,3})$'
 RE_CT_TAGS='^[A-Za-z0-9_.;-]{1,300}$'
 RE_CT_DESC='^[A-Za-z0-9 _.,:=()/-]{1,300}$'
 RE_OSTYPE='^(unmanaged|debian|ubuntu|devuan|alpine|archlinux|fedora|centos|opensuse|gentoo|nixos)$'
@@ -337,6 +338,7 @@ hc_pct_create() {
       --rootfs) [[ $val =~ $RE_STORAGE_SIZE ]] ;;
       --mp[0-9] | --mp[0-9][0-9]) [[ $val =~ $RE_CT_MP && $val != *..* ]] ;;
       --net[0-9] | --net[0-9][0-9]) [[ $val =~ $RE_CT_NET ]] ;;
+      --dev[0-9] | --dev[0-9][0-9]) [[ $val =~ $RE_CT_DEV && $val != *..* ]] ;;
       --unprivileged) [[ $val =~ ^[01]$ ]] ;;
       --ostype) [[ $val =~ $RE_OSTYPE ]] ;;
       --onboot | --start) [[ $val == 0 ]] ;;

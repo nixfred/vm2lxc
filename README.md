@@ -11,8 +11,8 @@
   <tr>
     <td align="center"><b>Source disks written</b><br><code>0</code><br><sub>sha256-checked</sub></td>
     <td align="center"><b>Real-host round trips</b><br><code>4</code> guest types<br><sub>PVE 9.2 · LVM-thin</sub></td>
-    <td align="center"><b>Tests</b><br><code>448</code><br><sub>0 skipped with strace</sub></td>
-    <td align="center"><b>Safety rails</b><br><code>38</code><br><sub>each mutation-tested</sub></td>
+    <td align="center"><b>Tests</b><br><code>477</code><br><sub>0 skipped with strace</sub></td>
+    <td align="center"><b>Safety rails</b><br><code>39</code><br><sub>each mutation-tested</sub></td>
     <td align="center"><b>Status</b><br><code>alpha</code><br><sub>read the limits</sub></td>
   </tr>
 </table>
@@ -142,6 +142,13 @@ the same flow as plain numbered prompts. For unattended runs, `vm2lxc menu --ans
 file and executes only if the file says `continue=yes` **and** you pass `--yes`.
 Design and rails: [`docs/menu.html`](docs/menu.html).
 
+**USB devices.** A VM with `usbN: host=0bda:8153` (or `host=1-2`) is yellow, not red: after the VM has stopped,
+`convert` looks the device up on the host and gives the container a `devN` entry for its USB node, plus its
+`ttyUSB`/`ttyACM` serial port if the host driver makes one. It maps only what it is sure of: nothing plugged in, two
+identical dongles (name one with `host=BUS-PORT`), or a cluster `mapping=` map **nothing**, and the plan, the notes and the
+final summary all say so. PCI passthrough stays red. Not yet run with a real USB device; the bus number changes when the
+device is replugged. Rail R39 in [`docs/convert.html`](docs/convert.html).
+
 <details>
 <summary><b>What <code>preflight</code> tells you</b> (real output, trimmed)</summary>
 
@@ -163,7 +170,7 @@ Disks
 
 The verdict is **provisional** until the guest has been looked inside (`inspect` or `convert`). What turns a VM red or
 yellow *from its config alone*: PCI passthrough, Windows or non-Linux `ostype`, appliance names (pfSense, TrueNAS, ...),
-USB or virtiofs passthrough, custom QEMU `args`, a TPM, raw host disks, a template or locked VM, an unsupported PVE
+virtiofs passthrough, USB passthrough (yellow: `convert` maps the device into the container when it finds exactly one match, see below), custom QEMU `args`, a TPM, raw host disks, a template or locked VM, an unsupported PVE
 version, and storage vm2lxc cannot snapshot yet (tagged `(v1 limit)` so it is not mistaken for a fault of the VM).
 Sizing comes from the VM's own RRD history, and **under 24 hours of history it refuses to guess** and keeps the current size.
 </details>
@@ -308,7 +315,7 @@ stateDiagram-v2
 
 A tool that runs as root on a hypervisor and destroys things has to be built as if every line will meet a bad day.
 The full designs, with failure matrices, are in [`docs/snapshot-layer.html`](docs/snapshot-layer.html) (rails R1-R21),
-[`docs/convert.html`](docs/convert.html) (rails R22-R29) and [`docs/menu.html`](docs/menu.html) (rails R30-R38, the menu). In short:
+[`docs/convert.html`](docs/convert.html) (rails R22-R29 and R39, USB) and [`docs/menu.html`](docs/menu.html) (rails R30-R38, the menu). In short:
 
 1. **The source is never written.** It is only the origin of a snapshot. A VM's only changes are a graceful shutdown,
    `onboot 0`, and (by `undo`) start and `onboot 1`. Its disk was sha256-checked before and after a real conversion.
@@ -375,10 +382,11 @@ its cloud image ships the packages and a stock `multipath.conf`.
 Also: the read-only engine underneath (`inspect`) was crash-tested with 61 injected `SIGKILL`/`SIGTERM`/`SIGHUP` runs on
 the same host, and an independent fresh-context review found 12 issues, all fixed (rails R1-R21).
 
-**448 tests** (0 skipped when `strace` is installed; one test skips without it), `shellcheck` clean. A stateful fake of `zfs`, LVM, `losetup`, `mount`, `qm` and `pct` drives
+**477 tests** (0 skipped when `strace` is installed; one test skips without it), `shellcheck` clean. A stateful fake of `zfs`, LVM, `losetup`, `mount`, `qm` and `pct` drives
 every row of the failure matrix. Every safety rail was **mutation-tested**: revert it, and a test goes red (more than 80
 reversals; the few that first survived exposed real gaps in the tests, and were closed). The menu's rails (R30-R38) got
-the same treatment: 43 reversals, all caught, after three tests that first let one through were strengthened.
+the same treatment: 43 reversals, all caught, after three tests that first let one through were strengthened. So did the USB
+rail (R39): 15 reversals, all caught.
 
 ## Command reference
 
