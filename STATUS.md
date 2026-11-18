@@ -92,9 +92,11 @@ plan all end in "nothing ran". The first Enter on a review screen shows the plan
   INCOMPLETE, the menu reports it, and `vm2lxc cleanup --yes` finishes it (tested end to end).
 - **Not proven:** the real whiptail in a real terminal; the 72x18 size fallback and `TERM=dumb` (read from a terminal
   the tests do not have). Ctrl-C is tested with the scripted whiptail and a signal to the process group.
-- **To try it on hex** (the test host has the pre-menu source until this is copied; it has no git, so copy the source):
-  `cd ~/nas/Projects/vm2lxc.proxmox && scp -r vm2lxc lib hex:/root/vm2lxc-src/`, then on hex
-  `cd /root/vm2lxc-src && ./vm2lxc`. Test VMs 600-603 only.
+- **On hex:** the menu source (commit `b393916`) was copied to `/root/vm2lxc-src` on 2026-11-17 at Fred's word and checked:
+  per-file and combined sha256 identical to the committed tree, every file parses, `--help` lists `menu`, `--answers`
+  and `--no-tui`. Nothing was run on hex; the host was idle (no vm2lxc process, no open run). hex has no git, so a later
+  update is the same copy: `cd ~/nas/Projects/vm2lxc.proxmox && scp -r vm2lxc lib hex:/root/vm2lxc-src/`.
+  To try it: `ssh hex`, `cd /root/vm2lxc-src && ./vm2lxc`. Test VMs 600-603 only.
 
 ## Grok 4.7: four attempts, zero findings
 
@@ -118,7 +120,7 @@ and `--effort` made no measurable difference. So it is the model deliberating wi
 
 ## Left on the test host (hex)
 
-`/root/vm2lxc-src` (the deployed source: the pre-menu version until it is copied again) and `/var/lib/vm2lxc/runs/*` (78 small CLOSED/COMMITTED journals, the audit
+`/root/vm2lxc-src` (the deployed source: the menu version, `b393916`, copied and checksum-verified 2026-11-17) and `/var/lib/vm2lxc/runs/*` (78 small CLOSED/COMMITTED journals, the audit
 trail of the real runs). Both are mine and safe to remove, and both are deliberately kept.
 The three scratch files I had left (`/root/vm600-disk0.sha.before`, `/root/mountwatch.log`, `/root/sweep.out`) were
 deleted on 2026-11-17 at Fred's word, after checking nothing had them open; `vm2lxc cleanup` on hex then reported no
