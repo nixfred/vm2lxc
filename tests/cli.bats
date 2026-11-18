@@ -94,10 +94,11 @@ load helpers
 }
 
 @test "global flags are accepted before and after the subcommand, in any order" {
-  run_fx --yes --dry-run --no-tui --answers /does/not/matter convert 100 --ctid 900
+  run_fx --yes --dry-run --no-tui --node pve-test convert 100 --ctid 900
   [ "$status" -eq 0 ]
   [[ $output == *"Nothing was executed"* ]]
-  run_fx convert 100 --yes --dry-run --no-tui --answers=/does/not/matter --node=pve1 --ctid=900
+  # (--answers is not a global flag any more: it belongs to `vm2lxc menu`, see tests/menu.bats)
+  run_fx convert 100 --yes --dry-run --no-tui --node=pve1 --ctid=900
   [ "$status" -eq 0 ]
   [[ $output == *"Nothing was executed"* ]]
 }

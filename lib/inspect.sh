@@ -181,6 +181,7 @@ cmd_inspect() {
     printf '\nNo Linux root filesystem (etc + usr or bin) was found on the boot disk: the guest checks have nothing to look at.\n'
   fi
   findings_reset
+  progress_emit checks 1 1 guest-checks
   guest_checks_run
   verdict_compute
   printf 'Guest checks: %d ran, %d pending.\n' "${#GUEST_RAN[@]}" "${#GUEST_PENDING[@]}"

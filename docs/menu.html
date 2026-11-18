@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vm2lxc: the menu (design)</title>
+<style>
+  :root { --bg:#0b1020; --panel:#121a30; --ink:#dbe4ff; --dim:#8fa0c8; --line:#26325a; --ok:#35d07f; --warn:#f2b84b; --bad:#ff5d6c; --acc:#6aa7ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 18px 60px; }
+  h1 { font-size: 24px; margin: 0 0 4px; } h2 { font-size: 18px; margin: 30px 0 8px; color: var(--acc); border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  p, li { color: var(--ink); } .dim { color: var(--dim); }
+  code, pre { font: 13px/1.45 ui-monospace, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+  code { padding: 1px 5px; } pre { padding: 10px 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: top; } th { background: var(--panel); color: var(--dim); }
+  .tag { display:inline-block; padding: 0 7px; border-radius: 9px; font-size: 12px; border: 1px solid var(--line); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  details { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; margin: 8px 0; } summary { cursor: pointer; color: var(--acc); }
+</style>
+</head>
+<body>
+<main>
+<h1>the menu</h1>
+<p class="dim">vm2lxc, design of decision D7 (the interactive front-end). Written 2026-11-17.
+  <span class="tag ok">built and tested against fakes</span>
+  <span class="tag warn">not yet driven by a person on a real host</span>
+  <span class="tag warn">alpha</span></p>
+
+<h2>1. What it is</h2>
+<p>D7 in <code>docs/BRIEF.md</code> asked for an interactive whiptail menu with a plain-prompt fallback, Enter = the recommended default,
+progress bars per stage, and a review screen with continue / back / edit / quit. That is this page.</p>
+<p>The one idea that keeps it safe: <b>the menu is only a front-end</b>. It asks questions and shows plans, and then it runs this same
+<code>vm2lxc</code> program with the same flags you could type yourself, and it shows you that exact command line first. It has no
+code path of its own that touches the host, so it cannot do anything the command line cannot, and every safety rail of the engine
+(R1 to R29: journal, lock, revalidation, refusal of a RED verdict, teardown on any signal) applies to it unchanged.</p>
+
+<h2>2. Ways in</h2>
+<table>
+<tr><th>You type</th><th>What happens</th></tr>
+<tr><td><code>vm2lxc</code> at a terminal</td><td>opens the menu. With no terminal it is still a usage error (64), as before.</td></tr>
+<tr><td><code>vm2lxc menu</code></td><td>the same; with no terminal it refuses (64) and changes nothing.</td></tr>
+<tr><td><code>vm2lxc menu --no-tui</code></td><td>the same flow with numbered plain prompts, no whiptail. This is also what you get when whiptail is missing, <code>TERM</code> is dumb, or the terminal is smaller than 72x18.</td></tr>
+<tr><td><code>vm2lxc menu --answers FILE [--yes]</code></td><td>unattended: no prompts, every answer from the file. See section 6.</td></tr>
+</table>
+
+<h2>3. The screens</h2>
+<p><b>Main menu</b> (Enter takes the highlighted default, Esc quits; the default is <i>Scan</i>, the safe first look):
+Scan, Preflight, Inspect, Convert, Undo, Clean up, Quit.</p>
+<p><b>VM list</b>: the ranked scan as a menu, best candidate highlighted (first green VM by RAM saved). A RED VM can be picked; its own plan refuses it.</p>
+<p><b>The review hub</b>: one screen with the plan, every setting, Continue, Back and Quit. Nothing scrolls and nothing is hidden behind a second page.</p>
+<pre>
+ Convert VM 603 "vm2lxc-test-deb12-2disk"
+ The exact command Continue runs:  vm2lxc convert 603 --ctid 9100 --hostname vm2lxc-test-deb12-2disk
+                                   --memory 1024 --cores 1 --yes
+ Nothing runs until you pick Continue. Pick a setting to change it.
+
+   plan        Show the full plan (changes nothing)            &lt;- the highlighted default, first time
+   continue    &gt;&gt; Continue: build container 9100 from VM 603, stopping the VM first
+   ctid        Container id ........... 9100
+   hostname    Hostname ............... vm2lxc-test-deb12-2disk
+   memory      RAM (MB) ............... 1024
+   cores       Cores .................. 1
+   privileged  Privileged container ... no
+   start       Start it after creating  no
+   back        Back to the VM list
+   quit        Quit (nothing is run)
+</pre>
+<p>Pick a setting to edit it (an input box, validated; Privileged asks first). <b>The first Enter is the plan.</b> Only after the plan was
+shown does <i>Continue</i> become the highlighted default, and any edit makes the plan stale again, so the default falls back to <i>plan</i>.
+Inspect, Undo and Clean up use the same hub with nothing to edit.</p>
+<p><b>Progress</b>: a gauge per run, driven by the engine (section 5), then a result screen with everything the engine printed. If the run failed the
+result says so and points at <code>vm2lxc cleanup</code>. The result is also left in the terminal's scrollback.</p>
+
+<h2>4. Rails</h2>
+<p>R1 to R29 are in the two earlier design pages and still apply. These are the menu's own. Every row has tests; a mutation check reverts each rail on
+a copy of the code and the tests that guard it must go red (results in <code>STATUS.md</code>).</p>
+<table>
+<tr><th>#</th><th>Rail</th><th>Where</th></tr>
+<tr><td>R30</td><td>The menu is a front-end only: it re-runs the same binary and shows the exact command line before Continue. Itself it only reads: the VM list (the scan), a VM's config, the run journals (to list the conversions <code>undo</code> can act on). Its one non-read, the scratch directory, is R36.</td><td><code>menu_cmdline</code>, <code>menu_plan</code>, <code>menu_execute</code></td></tr>
+<tr><td>R31</td><td>Nothing executes except after an explicit Continue (interactive), or <code>continue=yes</code> in the answers file <b>and</b> <code>--yes</code> on the command line. <code>menu_execute</code> is the only place that adds <code>--yes</code>; <code>menu_plan</code> refuses to carry it. Esc, Cancel, Back, Quit, the end of input and a plan the engine refuses all end in "nothing ran". The first Enter on a review screen is the plan.</td><td><code>lib/menu.sh</code></td></tr>
+<tr><td>R32</td><td>No terminal and no answers file: refuse (64). The menu never hangs waiting for a person who is not there, and never defaults into an action.</td><td><code>ui_init</code></td></tr>
+<tr><td>R33</td><td>The answers file is data, never code: only whitelisted keys, every value validated by the same rules as the command line, a duplicate or unknown key is an error, no control characters, at most 4 KiB, a regular file that is not writable by group or others and is owned by you or root. A key that does not belong to the chosen action is an error (a misspelt <code>ctid</code> must not be ignored). It can never execute on its own. <code>--answers</code> on any command except <code>menu</code> is a usage error.</td><td><code>answers_load</code>, <code>menu_answers</code>, <code>vm2lxc</code></td></tr>
+<tr><td>R34</td><td>Nothing reaches whiptail that it could read as an option: any word starting with <code>-</code> gets a leading space. VM names were already neutralised by the scan (<code>sanitize_text</code>), and text is never interpreted.</td><td><code>ui_safe</code></td></tr>
+<tr><td>R35</td><td>While a run is active, Ctrl-C does not kill the menu: the engine keeps its own handler, which tears the run down, and the menu waits for it and then shows the result. The engine is started with default signal handling so that handler works. A second Ctrl-C (which interrupts the menu's <code>wait</code>) changes nothing: the menu goes on waiting, each run has its own exit-code file, and a teardown the second signal cut short is reported as <code>INCOMPLETE</code> with the way out, <code>vm2lxc cleanup --yes</code>.</td><td><code>ui_run</code></td></tr>
+<tr><td>R36</td><td>The menu's scratch directory is private (0700) and removed when it ends, by two audited helpers in <code>lib/hostexec.sh</code>, the one file that may change anything: <code>scratch_new</code>, and <code>scratch_free</code>, which removes only a directory named <code>vm2lxc-menu.XXXXXX</code> directly under the temp directory, owned by you, not a symlink, holding nothing but plain files (it checks everything before it deletes anything, uses no glob and no recursion, and runs <code>command -p rm</code> so a hostile <code>PATH</code> is not trusted). The progress file is only written if it is an existing plain file (never a symlink: the engine runs as root) and is parsed strictly: a malformed line is dropped, nothing is evaluated.</td><td><code>scratch_new</code>, <code>scratch_free</code>, <code>ui_init</code>, <code>ui_cleanup</code>, <code>progress_emit</code>, <code>ui_progress_parse</code></td></tr>
+<tr><td>R37</td><td>The plain-prompt fallback is the same flow with the same defaults, and a closed input quits instead of looping.</td><td><code>ui_menu</code>, <code>ui_input</code>, <code>ui_yesno</code></td></tr>
+<tr><td>R38</td><td>The convert review screen shows every setting at once and validates each before it is used: container id (free, 100 or higher), hostname (RFC 1123), RAM, cores. Privileged asks first.</td><td><code>menu_convert_hub</code></td></tr>
+</table>
+
+<h2>5. How the progress bar knows</h2>
+<p>When the menu starts the engine it sets <code>VM2LXC_PROGRESS_FILE</code>. <code>run_apply</code>, <code>run_teardown</code> and the guest-check gate append
+one tab-separated line just before each step: <code>P  stage  i  n  kind</code>. Without the variable nothing is written and the engine behaves exactly as before.
+Stages and where they sit on the bar:</p>
+<table>
+<tr><th>Action</th><th>Stages (share of the bar)</th></tr>
+<tr><td>convert</td><td><code>mount</code> 0-30, <code>checks</code> 30-40, <code>build</code> 40-85, <code>teardown</code> 85-100</td></tr>
+<tr><td>inspect</td><td><code>mount</code> 0-60, <code>checks</code> 60-80, <code>teardown</code> 80-100</td></tr>
+<tr><td>undo</td><td><code>undo</code> 0-100</td></tr>
+<tr><td>cleanup</td><td><code>teardown</code> 0-100 (per run)</td></tr>
+</table>
+<p>Steps are counted by what is actually done, 1 to n, not by their position in the journal. The bar never goes backwards. In the <code>teardown</code> and
+<code>undo</code> stages a step reads as what is being undone (undoing <code>vm-stop</code> is "Starting the VM again").</p>
+
+<h2>6. The answers file</h2>
+<pre>
+# vm2lxc menu --answers convert.txt --yes
+action   = convert
+vm       = 603
+ctid     = 613
+hostname = test-two-disk
+memory   = 1024
+cores    = 1
+privileged = no
+start    = no
+continue = yes
+</pre>
+<table>
+<tr><th>Action</th><th>Keys that apply</th></tr>
+<tr><td>scan</td><td><code>action</code></td></tr>
+<tr><td>preflight</td><td><code>action</code>, <code>vm</code> (the exit code is the verdict: 0 / 10 / 20)</td></tr>
+<tr><td>inspect</td><td><code>action</code>, <code>vm</code>, <code>continue</code></td></tr>
+<tr><td>convert</td><td><code>action</code>, <code>vm</code>, <code>ctid</code>, <code>hostname</code>, <code>memory</code>, <code>cores</code>, <code>privileged</code>, <code>start</code>, <code>continue</code></td></tr>
+<tr><td>undo</td><td><code>action</code>, <code>ct</code>, <code>continue</code></td></tr>
+<tr><td>cleanup</td><td><code>action</code>, <code>continue</code></td></tr>
+</table>
+<p>It shows the plan, and executes only with <code>continue=yes</code> in the file <b>and</b> <code>--yes</code> on the command line. <code>--dry-run</code> beats both.
+A plan the engine refuses (a RED VM, an id in use) stays refused and its exit code is returned.</p>
+
+<h2>7. What is not proven</h2>
+<ul>
+<li><b>No person has driven it on a real terminal yet.</b> The tests use a scripted stand-in for whiptail and stdin for the plain prompts. They prove the flow, the
+  defaults, the arguments whiptail is given and that nothing runs on Esc/Back/Quit, but not how the real whiptail looks or behaves in a given terminal.</li>
+<li><b>Ctrl-C</b> is tested (one signal, and a second one in the middle of the teardown), but with the scripted whiptail and a signal sent to the process group. A real terminal and the real whiptail are not in the loop.</li>
+<li>A <b>second Ctrl-C during the engine's teardown</b> cuts that step short, because <code>timeout --foreground</code> hands the signal to the tool in flight. That is the engine's existing behaviour, not the menu's: the teardown stops as INCOMPLETE and says so, the menu shows it with the way out, and <code>vm2lxc cleanup --yes</code> finishes the job (tested end to end).</li>
+<li>The terminal-size check (72x18) and the <code>TERM=dumb</code> fallback are read from the real terminal, which the tests do not have.</li>
+<li>Not part of D7 and not built here: sizing choices (D8), the verified vzdump backup (D9), the soak period (D10), <code>--live</code> (D2).</li>
+</ul>
+</main>
+</body>
+</html>

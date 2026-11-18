@@ -691,6 +691,48 @@ committed_run_for_ct() {
   return 1
 }
 
+# runs_committed: ids of the runs whose conversion is committed and not yet undone (what `undo` can act on).
+runs_committed() {
+  local d
+  shopt -s nullglob
+  for d in "$(state_dir)"/runs/*/; do
+    [[ -f ${d}journal ]] || continue
+    grep -q '^CLOSED$' "${d}journal" && continue
+    grep -q '^COMMITTED$' "${d}journal" || continue
+    basename "$d"
+  done
+  shopt -u nullglob
+}
+
+# --- the menu's scratch directory (R36) ------------------------------------------------------------------------
+# The menu keeps its plans, logs and progress file in a private directory. Making and removing it is the one thing
+# the menu does that is not a read, so it lives here with the other audited changes, not in the menu's own files.
+
+# scratch_new: make <tmp>/vm2lxc-menu.XXXXXX (mode 700) and print its path
+scratch_new() {
+  local base=${TMPDIR:-/tmp}
+  (umask 077 && mktemp -d "${base%/}/vm2lxc-menu.XXXXXX")
+}
+
+# scratch_free <dir>: remove a scratch directory. Only a directory named like the ones scratch_new makes, directly under
+# the temp directory, owned by us, not a symlink, and holding nothing but plain files: anything else is left alone
+# (rc 1). Files one by one, no glob handed to rm, no recursion. `command -p` so a PATH that shadows rm is not trusted.
+scratch_free() {
+  local d=$1 base=${TMPDIR:-/tmp} f
+  local -a files
+  [[ $d == "${base%/}"/vm2lxc-menu.?????? && -d $d && ! -L $d && -O $d ]] || return 1
+  shopt -s nullglob dotglob
+  files=("$d"/*)
+  shopt -u nullglob dotglob
+  for f in "${files[@]}"; do
+    [[ -f $f && ! -L $f ]] || return 1
+  done
+  for f in "${files[@]}"; do
+    command -p rm -f -- "$f" || return 1
+  done
+  command -p rmdir -- "$d"
+}
+
 LOCK_FD=""
 lock_acquire() {
   mkdir -p "$(state_dir)" || return 1
@@ -1277,12 +1319,14 @@ act_undo_ct_start() {
 # --- apply and teardown ---------------------------------------------------------------------
 # run_apply: execute PLAN, journalling every step PENDING before it runs.
 run_apply() { # [keep]: with 'keep' the results of an earlier phase (MOUNTS, SKIPPED, notes) are not reset
-  local line kind rc seq
+  local line kind rc seq i=0 stage=mount total=${#PLAN[@]} # stage: what the menu's progress bar calls this run
   local -a f
-  if [[ ${1:-} != keep ]]; then MOUNTS=() SKIPPED=() MOUNT_NOTES=(); fi
+  if [[ ${1:-} != keep ]]; then MOUNTS=() SKIPPED=() MOUNT_NOTES=(); else stage=build; fi
   for line in "${PLAN[@]}"; do
     IFS='|' read -ra f <<<"$line"
     kind=${f[0]}
+    i=$((i + 1))
+    progress_emit "$stage" "$i" "$total" "$kind"
     journal_step "$kind" "${f[@]:1}" || {
       journal_unwritable
       return 1
@@ -1304,13 +1348,22 @@ run_apply() { # [keep]: with 'keep' the results of an earlier phase (MOUNTS, SKI
 # rc 0 only when everything is gone and the journal is CLOSED; otherwise the journal stays
 # open so that `vm2lxc cleanup` can finish the job.
 run_teardown() {
-  local run=$1 keep=${2:-0} n kind state rc final=0 jfail=0 # keep=1: also undo the KEPT steps (that is `undo`)
+  local run=$1 keep=${2:-0} n kind state rc final=0 jfail=0 stage=teardown # keep=1: also undo the KEPT steps (that is `undo`)
+  local todo=0 step_i=0
   local -a args
   journal_load "$run" || {
     printf 'vm2lxc: no journal for run %s\n' "$run" >&2
     return 1
   }
   if ((JL_CLOSED)); then return 0; fi
+  if [[ $keep == 1 ]]; then stage=undo; fi
+  # how many steps this run will actually undo, so the progress bar counts those and not journal positions
+  for ((n = JL_N; n >= 1; n--)); do
+    state=${JL_STATE[$n]:-}
+    [[ -n ${JL_KIND[$n]:-} && $state != UNDONE && $state != FOREIGN ]] || continue
+    if [[ $state == KEPT && $keep != 1 ]]; then continue; fi
+    todo=$((todo + 1))
+  done
   for ((n = JL_N; n >= 1; n--)); do
     kind=${JL_KIND[$n]:-}
     state=${JL_STATE[$n]:-}
@@ -1321,6 +1374,8 @@ run_teardown() {
       continue
     fi
     IFS=$'\t' read -ra args <<<"${JL_ARGS[$n]}"
+    step_i=$((step_i + 1))
+    progress_emit "$stage" "$step_i" "$todo" "$kind"
     rc=0
     "act_undo_${kind//-/_}" "${args[@]}" || rc=$?
     if ((rc == 0)); then

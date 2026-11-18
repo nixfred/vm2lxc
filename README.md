@@ -11,8 +11,8 @@
   <tr>
     <td align="center"><b>Source disks written</b><br><code>0</code><br><sub>sha256-checked</sub></td>
     <td align="center"><b>Real-host round trips</b><br><code>4</code> guest types<br><sub>PVE 9.2 · LVM-thin</sub></td>
-    <td align="center"><b>Tests</b><br><code>370</code><br><sub>0 skipped</sub></td>
-    <td align="center"><b>Safety rails</b><br><code>29</code><br><sub>each mutation-tested</sub></td>
+    <td align="center"><b>Tests</b><br><code>448</code><br><sub>0 skipped with strace</sub></td>
+    <td align="center"><b>Safety rails</b><br><code>38</code><br><sub>each mutation-tested</sub></td>
     <td align="center"><b>Status</b><br><code>alpha</code><br><sub>read the limits</sub></td>
   </tr>
 </table>
@@ -132,6 +132,15 @@ until you add `--yes`:
 pct start 610                                    # cut over when you are ready
 ./vm2lxc undo 610 --yes                          # changed your mind: container gone, VM back
 ```
+
+**Prefer a menu?** Run `./vm2lxc` at a terminal (or `./vm2lxc menu`). It is a front-end for exactly the commands above:
+pick a VM from the ranked list, then one review screen shows the exact command it will run, every setting
+(container id, hostname, RAM, cores, privileged, start) and the plan, and nothing happens until you pick **Continue**.
+The first Enter on that screen shows the plan; only after you have seen it does Enter mean Continue. A progress bar
+follows the run, and Esc, Back or Quit always mean "nothing ran". No whiptail, or a small terminal, or `--no-tui`:
+the same flow as plain numbered prompts. For unattended runs, `vm2lxc menu --answers FILE` takes every answer from a
+file and executes only if the file says `continue=yes` **and** you pass `--yes`.
+Design and rails: [`docs/menu.html`](docs/menu.html).
 
 <details>
 <summary><b>What <code>preflight</code> tells you</b> (real output, trimmed)</summary>
@@ -298,8 +307,8 @@ stateDiagram-v2
 <p align="center"><img src="docs/img/safety.svg" alt="Eight safety layers around your VM" width="100%"></p>
 
 A tool that runs as root on a hypervisor and destroys things has to be built as if every line will meet a bad day.
-The full designs, with failure matrices, are in [`docs/snapshot-layer.html`](docs/snapshot-layer.html) (rails R1-R21) and
-[`docs/convert.html`](docs/convert.html) (rails R22-R29). In short:
+The full designs, with failure matrices, are in [`docs/snapshot-layer.html`](docs/snapshot-layer.html) (rails R1-R21),
+[`docs/convert.html`](docs/convert.html) (rails R22-R29) and [`docs/menu.html`](docs/menu.html) (rails R30-R38, the menu). In short:
 
 1. **The source is never written.** It is only the origin of a snapshot. A VM's only changes are a graceful shutdown,
    `onboot 0`, and (by `undo`) start and `onboot 1`. Its disk was sha256-checked before and after a real conversion.
@@ -366,9 +375,10 @@ its cloud image ships the packages and a stock `multipath.conf`.
 Also: the read-only engine underneath (`inspect`) was crash-tested with 61 injected `SIGKILL`/`SIGTERM`/`SIGHUP` runs on
 the same host, and an independent fresh-context review found 12 issues, all fixed (rails R1-R21).
 
-**370 tests, 0 skipped**, `shellcheck` clean. A stateful fake of `zfs`, LVM, `losetup`, `mount`, `qm` and `pct` drives
+**448 tests** (0 skipped when `strace` is installed; one test skips without it), `shellcheck` clean. A stateful fake of `zfs`, LVM, `losetup`, `mount`, `qm` and `pct` drives
 every row of the failure matrix. Every safety rail was **mutation-tested**: revert it, and a test goes red (more than 80
-reversals; the few that first survived exposed real gaps in the tests, and were closed).
+reversals; the few that first survived exposed real gaps in the tests, and were closed). The menu's rails (R30-R38) got
+the same treatment: 43 reversals, all caught, after three tests that first let one through were strengthened.
 
 ## Command reference
 
@@ -403,7 +413,9 @@ reversals; the few that first survived exposed real gaps in the tests, and were 
 - The container keeps the guest's kernel and initramfs packages (unused). Staging needs free space in `/var/tmp`
   about the size of the guest. One filesystem per extra disk.
 - **Everything written in the container after the conversion is lost by `undo`.** It does not copy data back.
-- No interactive UI, vzdump safety backup, or soak-period reminder yet.
+- No vzdump safety backup, sizing choice or soak-period reminder yet.
+- **The menu has not been driven by a person on a real host yet.** Its tests use a scripted stand-in for whiptail and a
+  fake host; the real whiptail in a real terminal is the one thing they cannot show.
 
 **Roadmap:** a real ZFS run, XFS/btrfs guests and other distros; `--live` two-pass copy (bulk from the snapshot, delta at
 cutover); a verified `vzdump` backup before anything is offered for removal; a soak period; Tailscale hand-back on `undo`.
@@ -428,8 +440,9 @@ against canned data and a fake storage host. See [CONTRIBUTING.md](CONTRIBUTING.
 | `lib/snapplan.sh` | the pure snapshot plan |
 | `lib/hostexec.sh` | **the only file that may change the host**: allowlist, journal, lock, handlers, teardown |
 | `lib/inspect.sh`, `lib/convert.sh` | `inspect`, `cleanup`, `convert`, `undo` |
-| `docs/` | the two design pages with rails and failure matrices, and the diagrams in `docs/img/` |
-| `tests/` | 15 bats files, a stateful fake host, stub PVE binaries, two fixture hosts |
+| `lib/ui.sh`, `lib/menu.sh` | the menu (D7): whiptail and plain prompts, the answers file, the progress bar, the review screens |
+| `docs/` | the three design pages with rails and failure matrices, and the diagrams in `docs/img/` |
+| `tests/` | 17 bats files, a stateful fake host, stub PVE binaries, a scripted whiptail, two fixture hosts |
 
 ## FAQ
 

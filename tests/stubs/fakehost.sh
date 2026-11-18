@@ -18,6 +18,7 @@
 #   $FAKE_STATE/blkid/<enc device>.UUID|.LABEL  what blkid prints for a device
 #   FAKE_SLEEP_LSBLK  seconds to sleep inside lsblk (so a test can signal a running inspect)
 #   FAKE_SLEEP_DESTROY seconds to sleep inside `zfs destroy` (a window to signal a running teardown)
+#   FAKE_SLEEP_PCT     seconds to sleep inside every `pct` call (makes undo slow enough for a progress bar to show steps)
 #
 # It is stricter than the real tools where that helps catch bugs: `zfs destroy` and `umount`
 # reject any flag, `lvremove` insists on exactly `-y <lv>`, `losetup -d` and `lvremove` fail
@@ -445,6 +446,7 @@ case $name in
     ctd="$S/ct/$id"
     ctroot="${VM2LXC_CT_ROOT:?VM2LXC_CT_ROOT not set}/$id/rootfs"
     gone() { echo "Configuration file 'nodes/fake/lxc/$id.conf' does not exist" >&2; exit 2; }
+    [[ -z ${FAKE_SLEEP_PCT:-} ]] || sleep "$FAKE_SLEEP_PCT"
     case $sub in
       status)
         maybe_fail pct.status

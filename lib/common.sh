@@ -78,13 +78,27 @@ vmid_valid() {
   [[ $1 =~ ^[0-9]{3,9}$ ]]
 }
 
+# progress_emit <stage> <i> <n> <step-kind>: tell the menu's progress bar which step is about to run, as one
+# tab-separated line appended to $VM2LXC_PROGRESS_FILE. A no-op unless the menu set it, and only for a plain
+# file that already exists (never a symlink: this runs as root). A failed write never fails the run.
+progress_emit() {
+  local f=${VM2LXC_PROGRESS_FILE:-}
+  [[ -n $f && -f $f && ! -L $f ]] || return 0
+  printf 'P\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >>"$f" 2>/dev/null || true
+}
+
 usage() {
   cat <<EOF
 vm2lxc ${VM2LXC_VERSION}: convert a Proxmox QEMU VM into an LXC container, safely (ALPHA)
 
-Usage: vm2lxc [options] <command> [args]
+Usage: vm2lxc [options] [<command> [args]]
+
+With no command, at a terminal, vm2lxc opens the menu.
 
 Commands:
+  menu               the interactive menu (whiptail, or plain prompts): pick a VM, review the
+                     plan and the settings on one screen, then Continue. It only runs this same
+                     program with the flags it shows you, and changes nothing until you Continue
   preflight <vmid>   read-only convertibility check: verdict, reasons, sizing
   scan [vmid...]     rank the VMs on this node (or just the ones named) by verdict and RAM saved
   inspect <vmid>     show the plan to mount the VM's disks read-only from storage
@@ -105,9 +119,11 @@ Options:
   --memory MB        convert: container RAM (default: the VM's)
   --cores N          convert: container cores (default: the VM's)
   --hostname NAME    convert: container hostname (default: the VM's name)
-  --answers FILE     read prompt answers from FILE (accepted, unused so far)
+  --answers FILE     menu only: take every answer from FILE (key=value lines: action, vm, ct, ctid,
+                     hostname, memory, cores, privileged, start, continue) and ask nothing. It
+                     executes only with continue=yes in the file AND --yes on the command line
   --dry-run          show what would happen (preflight and scan are always read-only)
-  --no-tui           plain prompts, no whiptail (accepted, unused so far)
+  --no-tui           menu only: plain prompts, no whiptail
   --node NAME        PVE node name (default: this host's short hostname)
   -h, --help         this text
   --version          print the version

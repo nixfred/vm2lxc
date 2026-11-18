@@ -1,13 +1,16 @@
 # vm2lxc status
 
-Updated 2026-11-17 (Larry:gus). Local repo `main`; remotes `forgejo` (private), `nas`, and `origin` = GitHub (**public** since 2026-11-17).
+Updated 2026-11-17 (Larry:Prime). Local repo `main`; remotes `forgejo` (private), `nas`, and `origin` = GitHub (**public** since 2026-11-17).
 Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and `docs/convert.html` (rails R22-R29).
 
 ## TL;DR
 
 - **Everything in the original scope now exists and works**: `preflight`, `scan`, `inspect`, `cleanup`, the 12 guest
   checks, `convert` and `undo`. There are no stubs left.
-- **370 tests pass, 0 skipped**, shellcheck clean. Every safety rail has a test that goes red when the rail is
+- **The D7 menu is built** (`vm2lxc`, or `vm2lxc menu`): whiptail with a plain-prompt fallback, a one-screen review hub,
+  a progress bar, and `--answers FILE` for unattended runs. It is tested against fakes and **not yet driven by a person
+  on a real host**. See "The menu" below.
+- **448 tests pass, 0 failed, 1 skipped on larry** (no `strace` here; 0 skipped where it is installed), shellcheck clean. Every safety rail has a test that goes red when the rail is
   reverted (more than 80 reversals over the project).
 - **Run for real** on a Proxmox VE 9.2.28 host (LVM-thin) against the four disposable test VMs 600-603, each converted
   into a container and undone again: Debian 12 cloud image, a two-disk Debian, Alpine, Ubuntu 24.04 with Tailscale.
@@ -19,6 +22,7 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
 
 | Command | State | Notes |
 |---|---|---|
+| `menu` (or bare `vm2lxc`) | built, fakes only | the D7 front-end; **not yet driven by a person on a real host** |
 | `preflight <vmid>` | real-host verified | verdict (exit 0/10/20), disk and NIC plan, RAM/CPU sizing from RRD |
 | `scan [vmid...]` | real-host verified | ranks by verdict then RAM saved; ids restrict it |
 | `inspect <vmid>` | real-host verified (LVM-thin) | plan; `--yes` snapshots, mounts read-only, runs the 12 guest checks, tears down |
@@ -60,8 +64,37 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
 - The container keeps the guest's kernel and initramfs packages (unused). Staging needs free space in `/var/tmp`
   about the size of the guest. One filesystem per extra disk. Everything written in the container after the
   conversion is lost by `undo`.
-- Not built: `--live` two-pass copy (D2), the interactive UI (D7), the sizing choice (D8), the verified vzdump backup
+- **The menu has only run against fakes** (a scripted whiptail, a fake host). The real whiptail in a real terminal, the
+  terminal-size fallback and the look of the screens are unverified.
+- Not built: `--live` two-pass copy (D2), the sizing choice (D8), the verified vzdump backup
   (D9), the soak period (D10), the post-conversion compare (D12).
+
+## The menu (D7)
+
+Fred, 2026-11-17: "I thought we talked about a script with a menu system": D7 in `docs/BRIEF.md`, never built until now.
+Design and the nine rails (R30-R38): `docs/menu.html`. The one idea: **the menu is only a front-end.** It re-runs this
+same program with the flags you could type, shows that exact command first, and executes only after an explicit Continue
+(or, unattended, `continue=yes` in the answers file **and** `--yes`). Esc, Back, Quit, the end of input and a refused
+plan all end in "nothing ran". The first Enter on a review screen shows the plan; Continue becomes the default only after.
+
+- **Code:** `lib/ui.sh` (backends, answers parser, progress), `lib/menu.sh` (the flows), small hooks in the engine
+  (`progress_emit` in `run_apply`, `run_teardown` and the guest-check gate; `scan_collect` split out of `cmd_scan`),
+  `scratch_new`/`scratch_free` and `runs_committed` in `lib/hostexec.sh`.
+- **Tests: 78 new** (`tests/ui.bats`, `tests/menu.bats`, a scripted `tests/stubs/whiptail.sh`), plus two older tests
+  changed on purpose (`--answers` is now refused outside `menu`, rail R33).
+- **Mutation check of the menu's rails: 43 reversals, all caught.** Three survived at first and each exposed a weak test
+  (the menu claiming to execute under `--dry-run`; an id already used by a VM; a second run's progress bar ending at
+  once), all strengthened. Every mutant was syntax-checked, so a "kill" is an assertion failing, not a parse error.
+- **Found while building it:** undo's progress counted journal positions and would have jumped from 25% to 91% (fixed:
+  steps are counted by what is done); the static guard that only `hostexec.sh` may `rm` was right, so the scratch-dir
+  cleanup lives there behind audited helpers instead of the guard being loosened; a second Ctrl-C during the engine's
+  teardown cuts that step short (existing behaviour: `timeout --foreground` forwards the signal), the teardown stops as
+  INCOMPLETE, the menu reports it, and `vm2lxc cleanup --yes` finishes it (tested end to end).
+- **Not proven:** the real whiptail in a real terminal; the 72x18 size fallback and `TERM=dumb` (read from a terminal
+  the tests do not have). Ctrl-C is tested with the scripted whiptail and a signal to the process group.
+- **To try it on hex** (the test host has the pre-menu source until this is copied; it has no git, so copy the source):
+  `cd ~/nas/Projects/vm2lxc.proxmox && scp -r vm2lxc lib hex:/root/vm2lxc-src/`, then on hex
+  `cd /root/vm2lxc-src && ./vm2lxc`. Test VMs 600-603 only.
 
 ## Grok 4.7: four attempts, zero findings
 
@@ -85,7 +118,7 @@ and `--effort` made no measurable difference. So it is the model deliberating wi
 
 ## Left on the test host (hex)
 
-`/root/vm2lxc-src` (the deployed source) and `/var/lib/vm2lxc/runs/*` (78 small CLOSED/COMMITTED journals, the audit
+`/root/vm2lxc-src` (the deployed source: the pre-menu version until it is copied again) and `/var/lib/vm2lxc/runs/*` (78 small CLOSED/COMMITTED journals, the audit
 trail of the real runs). Both are mine and safe to remove, and both are deliberately kept.
 The three scratch files I had left (`/root/vm600-disk0.sha.before`, `/root/mountwatch.log`, `/root/sweep.out`) were
 deleted on 2026-11-17 at Fred's word, after checking nothing had them open; `vm2lxc cleanup` on hex then reported no

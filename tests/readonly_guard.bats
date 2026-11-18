@@ -226,13 +226,34 @@ live() {
   [ ! -s "$STUB_LOG" ]
 }
 
-@test "dynamic: --yes, --dry-run, --answers and --no-tui do not open any door to a mutating call" {
-  live --node pve-test --yes --dry-run --no-tui --answers /nonexistent/answers.ini preflight 100
+@test "dynamic: --yes, --dry-run and --no-tui do not open any door to a mutating call, and --answers is refused outside the menu before any host call" {
+  live --node pve-test --yes --dry-run --no-tui preflight 100
   [ "$status" -eq 0 ]
   live --node pve-test --yes --dry-run --no-tui scan
   [ "$status" -eq 0 ]
   refute_log '^REFUSED'
   [ "$(grep -cvE '^(pveversion |pvesm status|qm config [0-9]+|pvesh get )' "$STUB_LOG")" -eq 0 ]
+  : >"$STUB_LOG"
+  live --answers /nonexistent/answers.ini preflight 100
+  [ "$status" -eq 64 ]
+  [ ! -s "$STUB_LOG" ]
+}
+
+@test "dynamic: the menu in answers mode makes only reads (scan, preflight, a convert PLAN), even with continue=yes in the file, and leaves no scratch behind" {
+  export TMPDIR=$BATS_TEST_TMPDIR
+  f=$BATS_TEST_TMPDIR/answers
+  local a
+  for a in 'action=scan' $'action=preflight\nvm=100' $'action=convert\nvm=100\nctid=900\ncontinue=yes'; do
+    printf '%s\n' "$a" >"$f"
+    chmod 600 "$f"
+    live --node pve-test menu --answers "$f"
+    [ "$status" -eq 0 ] || { echo "$a: $output"; return 1; }
+  done
+  [[ $output == *"Nothing was executed"* ]]
+  refute_log '^REFUSED'
+  [ "$(grep -cvE '^(pveversion |pvesm status|pvesm path [A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+|qm config [0-9]+|pvesh get )' "$STUB_LOG")" -eq 0 ] ||
+    { grep -vE '^(pveversion |pvesm status|pvesm path [A-Za-z0-9_.-]+:[A-Za-z0-9_./-]+|qm config [0-9]+|pvesh get )' "$STUB_LOG"; return 1; }
+  must_fail compgen -G "$TMPDIR/vm2lxc-menu.*"
 }
 
 @test "dynamic: a failing read (VM does not exist) is reported, and still nothing mutating runs" {

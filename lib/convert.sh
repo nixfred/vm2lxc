@@ -452,6 +452,7 @@ cmd_convert() {
   done
   pick_guest_root || die "$EXIT_REFUSED" "no Linux root filesystem (etc + usr or bin) was found on the boot disk: nothing to convert (everything is being torn down)"
   printf 'Guest root: %s\n' "$GUEST_ROOT"
+  progress_emit checks 1 1 guest-checks
   guest_checks_run
   verdict_compute
   printf 'Guest checks: %d ran, %d pending.\n' "${#GUEST_RAN[@]}" "${#GUEST_PENDING[@]}"

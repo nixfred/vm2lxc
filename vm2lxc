@@ -40,9 +40,12 @@ source "$VM2LXC_LIBDIR/hostexec.sh"
 source "$VM2LXC_LIBDIR/inspect.sh"
 # shellcheck source=lib/convert.sh
 source "$VM2LXC_LIBDIR/convert.sh"
+# shellcheck source=lib/ui.sh
+source "$VM2LXC_LIBDIR/ui.sh"
+# shellcheck source=lib/menu.sh
+source "$VM2LXC_LIBDIR/menu.sh"
 
-# --answers and --no-tui are accepted so the CLI is stable; nothing consumes them until the interactive
-# convert exists. Scoped disable, not a global one.
+# Scoped disable, not a global one: the OPT_* globals are read by the lib files.
 # shellcheck disable=SC2034
 parse_args() {
   POSITIONAL=()
@@ -105,10 +108,21 @@ main() {
   fi
   local cmd=${POSITIONAL[0]:-}
   if [[ -z $cmd ]]; then
-    usage >&2
-    exit "$EXIT_USAGE"
+    # a bare `vm2lxc` at a terminal opens the menu (D7); anywhere else it is still a usage error
+    if [[ -z $OPT_ANSWERS ]] && ui_interactive; then
+      cmd=menu
+    else
+      usage >&2
+      exit "$EXIT_USAGE"
+    fi
+  fi
+  # An answers file chooses the VM, the container id and whether to continue: it belongs to the menu alone. Ignoring
+  # it on another command would silently run something other than what the file says (R33).
+  if [[ -n $OPT_ANSWERS && $cmd != menu ]]; then
+    die "$EXIT_USAGE" "--answers only works with 'vm2lxc menu' (the other commands take their settings as flags)"
   fi
   case $cmd in
+    menu) cmd_menu "${POSITIONAL[@]:1}" ;;
     preflight) cmd_preflight "${POSITIONAL[@]:1}" ;;
     scan) cmd_scan "${POSITIONAL[@]:1}" ;;
     convert) cmd_convert "${POSITIONAL[@]:1}" ;;

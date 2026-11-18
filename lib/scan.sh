@@ -83,8 +83,10 @@ scan_one() {
   scan_add_row "$rank" "$saved" "$vmid" "$name" "$state" "${VERDICT^^}" "$ram" "$saved_txt" "$disk" "$why"
 }
 
-cmd_scan() {
-  local list vmid name state template n=0 verdict ram saved_txt disk why color _rank _saved
+# scan_collect [vmid...]: read the node's VMs and fill SCAN_ROWS and the SCAN_* counters. Read-only. Split out
+# of cmd_scan so the menu can offer the same ranked list without parsing the printed table.
+scan_collect() {
+  local list vmid name state template
   local ids_json="[]" id
   local -a wanted=()
   # Optional VM ids restrict the scan: `vm2lxc scan 600 601`. Without them, every VM on the node.
@@ -108,6 +110,16 @@ cmd_scan() {
     scan_one "$vmid" "$name" "$state" "$template"
   done < <(jq -r --argjson ids "$ids_json" \
     'sort_by(.vmid) | .[] | select(($ids | length) == 0 or (.vmid as $v | $ids | index($v) != null)) | [.vmid, (.name // "-"), (.status // "-"), (.template // 0)] | @tsv' <<<"$list")
+}
+
+# scan_sorted_rows: SCAN_ROWS ranked as `scan` prints them (verdict, then RAM saved, then id), one per line.
+scan_sorted_rows() {
+  printf '%s\n' "${SCAN_ROWS[@]}" | sort -t $'\t' -k1,1n -k2,2nr -k3,3n
+}
+
+cmd_scan() {
+  local vmid name state verdict ram saved_txt disk why color _rank _saved n=0
+  scan_collect "$@"
 
   printf '%svm2lxc scan%s\n' "$C_BLD" "$C_RST"
   printf '  node %s | PVE %s | %s\n\n' "$PVE_NODE_NAME" "${PVE_VERSION:-unknown}" "$(pve_mode_label)"
@@ -132,7 +144,7 @@ cmd_scan() {
     esac
     printf '  %-3s %-6s %-*.*s %-8s %s%-8s%s %-18s %-8s %-7s %s\n' \
       "$n" "$vmid" "$name_w" "$name_w" "$name" "$state" "$color" "$verdict" "$C_RST" "$ram" "$saved_txt" "$disk" "$why"
-  done < <(printf '%s\n' "${SCAN_ROWS[@]}" | sort -t $'\t' -k1,1n -k2,2nr -k3,3n)
+  done < <(scan_sorted_rows)
 
   printf '\n  %d VMs: %d green, %d yellow, %d red' "${#SCAN_ROWS[@]}" "$SCAN_GREEN" "$SCAN_YELLOW" "$SCAN_RED"
   if ((SCAN_UNREADABLE > 0)); then
