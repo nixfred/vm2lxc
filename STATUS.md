@@ -12,7 +12,10 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
   on a real host**. See "The menu" below.
 - **USB passthrough is mapped (R39)**: `convert` gives the container the raw USB node and any `ttyUSB`/`ttyACM` port of a
   device it finds exactly once on the host; it maps nothing it is unsure of and says so three times. Fake host only.
-- **477 tests pass, 0 failed, 1 skipped on larry** (no `strace` here; 0 skipped where it is installed), shellcheck clean. Every safety rail has a test that goes red when the rail is
+- **scan and preflight now look inside the disks by default (R40)**, Fred's "Always inspect": the 12 guest checks run from a
+  read-only snapshot through the same engine as `inspect --yes`; `--no-inspect`/`--dry-run` skip it. Fake host only so far.
+- **The menu ends every run on a result screen** (SUCCESS/FAILED/CANCELLED, what to do next, the log below).
+- **506 tests pass, 0 failed, 1 skipped on larry** (no `strace` here; 0 skipped where it is installed), shellcheck clean. Every safety rail has a test that goes red when the rail is
   reverted (more than 80 reversals over the project).
 - **Run for real** on a Proxmox VE 9.2.28 host (LVM-thin) against the four disposable test VMs 600-603, each converted
   into a container and undone again: Debian 12 cloud image, a two-disk Debian, Alpine, Ubuntu 24.04 with Tailscale.
@@ -25,8 +28,8 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
 | Command | State | Notes |
 |---|---|---|
 | `menu` (or bare `vm2lxc`) | built, fakes only | the D7 front-end; **not yet driven by a person on a real host** |
-| `preflight <vmid>` | real-host verified | verdict (exit 0/10/20), disk and NIC plan, RAM/CPU sizing from RRD |
-| `scan [vmid...]` | real-host verified | ranks by verdict then RAM saved; ids restrict it |
+| `preflight <vmid>` | config part real-host verified; the look inside (R40) fake only | verdict (exit 0/10/20), disk and NIC plan, RAM/CPU sizing from RRD, and now the 12 guest checks from inside the disk |
+| `scan [vmid...]` | config part real-host verified; the look inside (R40) fake only | ranks by verdict then RAM saved; ids restrict it; looks inside each non-RED VM |
 | `inspect <vmid>` | real-host verified (LVM-thin) | plan; `--yes` snapshots, mounts read-only, runs the 12 guest checks, tears down |
 | `cleanup` | real-host verified | lists, and with `--yes` removes, what a crashed run left; does not mistake a committed conversion for a crash |
 | `convert <vmid>` | real-host verified (LVM-thin, 4 guest types) | stop-and-copy; unprivileged container; the VM's MAC; extra disks as mount points; `--start` for the cutover |
@@ -66,6 +69,8 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
 - The container keeps the guest's kernel and initramfs packages (unused). Staging needs free space in `/var/tmp`
   about the size of the guest. One filesystem per extra disk. Everything written in the container after the
   conversion is lost by `undo`.
+- **The look inside (R40) and the result screen have only run against the fake host and the scripted whiptail**; the real hex
+  menu, a scan across many VMs with real LVM/ZFS, and its time per VM are unproven.
 - **USB mapping (R39) has only run against the fake host.** No real USB device has been mapped into a real container; the
   sysfs reader was run read-only on hex and parsed its four real devices. Bus/device numbers change on replug; a serial
   port keeps the host's name inside the container.
@@ -73,6 +78,19 @@ Front page: `README.md`. Designs: `docs/snapshot-layer.html` (rails R1-R21) and 
   terminal-size fallback and the look of the screens are unverified.
 - Not built: `--live` two-pass copy (D2), the sizing choice (D8), the verified vzdump backup
   (D9), the soak period (D10), the post-conversion compare (D12).
+
+## Look inside by default (R40) and the result screen
+
+Fred, 2026-11-18, shown the hex menu: preflight said "12 guest-internal checks still need disk inspection (not implemented yet)",
+and after a real conversion the menu "puts me back" at the main menu with no success screen. I recommended an opt-in
+`--inspect`; **Fred chose "Always inspect"** and that is what was built, against that advice, so it is recorded here.
+Code: `inspect_overlay` (+ `_wanted`, `_teardown`) in `lib/inspect.sh`, called by `scan_one` and `cmd_preflight`;
+`--no-inspect`; honest "not checked, <reason>" wording; `menu_look`, `menu_result_summary`, `menu_result` in `lib/menu.sh`.
+Rail R40 in `docs/snapshot-layer.html`; the screens in `docs/menu.html`. Tests: 29 more (`tests/overlay.bats`, the menu, the
+readonly guard); 17 reversals, all caught (two survived at first: a RED VM that could not be planned, and a first look that
+failed while a later VM hid the leftover; both tests were strengthened). **Real hex run still to do**: Fred runs the menu.
+The old static/dynamic "scan only reads" guards now pass `--no-inspect`, and one new dynamic test proves a scan with stubbed
+(untrusted) tools refuses, changes nothing and exits 77.
 
 ## USB passthrough (R39)
 

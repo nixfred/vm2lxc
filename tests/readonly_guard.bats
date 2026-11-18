@@ -119,7 +119,7 @@ live() {
 }
 
 @test "dynamic: preflight in live mode runs exactly these reads, in this order, and nothing else" {
-  live --node pve-test preflight 100
+  live --node pve-test preflight 100 --no-inspect
   [ "$status" -eq 0 ]
   local expected
   expected=$(printf '%s\n' \
@@ -133,15 +133,15 @@ live() {
 }
 
 @test "dynamic: preflight output in live mode equals fixture mode (apart from the mode label)" {
-  live --node pve-test preflight 101
+  live --node pve-test preflight 101 --no-inspect
   local live_out=$output live_status=$status
-  run_fx preflight 101
+  run_fx preflight 101 --no-inspect
   [ "$status" -eq "$live_status" ]
   [ "$(sed 's/live host/MODE/' <<<"$live_out")" = "$(sed 's/FIXTURE MODE (canned data, no real host)/MODE/' <<<"$output")" ]
 }
 
 @test "dynamic: scan in live mode makes only allowed reads, skips sizing for red VMs, and matches fixture mode" {
-  live --node pve-test scan
+  live --node pve-test scan --no-inspect
   [ "$status" -eq 0 ]
   local live_out=$output
   refute_log '^REFUSED'
@@ -157,12 +157,12 @@ live() {
   done
   # a green VM did get its history fetched
   grep -q 'qemu/100/rrddata --timeframe month' "$STUB_LOG"
-  run_fx scan
+  run_fx scan --no-inspect
   [ "$(sed 's/live host/MODE/' <<<"$live_out")" = "$(sed 's/FIXTURE MODE (canned data, no real host)/MODE/' <<<"$output")" ]
 }
 
 @test "dynamic: 'scan 100 103' reads the config and history of those VMs only, no other VM is touched" {
-  live --node pve-test scan 100 103
+  live --node pve-test scan 100 103 --no-inspect
   [ "$status" -eq 0 ]
   grep -q '^qm config 100$' "$STUB_LOG"
   grep -q '^qm config 103$' "$STUB_LOG"
@@ -285,4 +285,14 @@ live() {
       grep -vE '"/dev/null"|"/dev/tty"' || true)
     [ -z "$bad" ] || { echo "filesystem changes while running: vm2lxc $cmd"; echo "$bad"; return 1; }
   done
+}
+
+@test "dynamic (R40): scan WITHOUT --no-inspect in live mode with stubbed (untrusted) tools: the safety rail refuses, no mutating tool runs, and the scan says so loudly" {
+  export VM2LXC_STATE_DIR="$BATS_TEST_TMPDIR/state" VM2LXC_RUN_ROOT="$BATS_TEST_TMPDIR/run"
+  live --node pve-test scan 100
+  # the engine's own rail: a zfs that is not in a system directory is never run, so the step fails and its teardown too
+  [ "$status" -eq 77 ] || { echo "status $status"; echo "$output"; return 1; }
+  [[ $output == *"REFUSED (safety rail): zfs resolves to"* && $output == *"INCOMPLETE"* && $output == *"vm2lxc cleanup --yes"* ]]
+  # nothing that changes anything was ever invoked
+  must_fail grep -E '^(zfs|losetup|mount|umount|pct|lvcreate|lvremove|lvchange|rm|tar) ' "$STUB_LOG"
 }

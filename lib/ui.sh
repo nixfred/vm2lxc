@@ -308,6 +308,7 @@ ui_kind_label() {
     dev-ready) printf 'Waiting for the device' ;;
     mount-disk) printf 'Mounting it read-only' ;;
     guest-checks) printf 'Running the guest checks' ;;
+    scan) printf 'Looking at a VM' ;;
     stage-dir) printf 'Making the staging directory' ;;
     tar-create) printf 'Archiving the guest filesystem' ;;
     ct-create) printf 'Creating the container' ;;
@@ -330,6 +331,7 @@ ui_stage_range() {
     inspect:mount) printf '0 60' ;;
     inspect:checks) printf '60 20' ;;
     inspect:teardown) printf '80 20' ;;
+    scan:look) printf '0 100' ;;
     undo:undo) printf '0 100' ;;
     cleanup:teardown) printf '0 100' ;;
     *) return 1 ;;

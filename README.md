@@ -11,8 +11,8 @@
   <tr>
     <td align="center"><b>Source disks written</b><br><code>0</code><br><sub>sha256-checked</sub></td>
     <td align="center"><b>Real-host round trips</b><br><code>4</code> guest types<br><sub>PVE 9.2 · LVM-thin</sub></td>
-    <td align="center"><b>Tests</b><br><code>477</code><br><sub>0 skipped with strace</sub></td>
-    <td align="center"><b>Safety rails</b><br><code>39</code><br><sub>each mutation-tested</sub></td>
+    <td align="center"><b>Tests</b><br><code>506</code><br><sub>0 skipped with strace</sub></td>
+    <td align="center"><b>Safety rails</b><br><code>40</code><br><sub>each mutation-tested</sub></td>
     <td align="center"><b>Status</b><br><code>alpha</code><br><sub>read the limits</sub></td>
   </tr>
 </table>
@@ -95,8 +95,8 @@ offer no real rollback. vm2lxc is built around the opposite defaults:
 
 | Command | What it does | Changes the host? |
 |---|---|---|
-| `preflight <vmid>` | verdict (exit 0/10/20), disk and NIC plan, RAM/CPU sizing from the VM's RRD history | no |
-| `scan [vmid...]` | ranks VMs by verdict and RAM you would save | no |
+| `preflight <vmid>` | verdict (exit 0/10/20), disk and NIC plan, RAM/CPU sizing from the VM's RRD history, and the 12 guest checks from inside the disk | no VM; it takes a read-only snapshot of the disk and removes it again (`--no-inspect` skips that) |
+| `scan [vmid...]` | ranks VMs by verdict and RAM you would save, looking inside each disk the config did not already rule out | same as preflight |
 | `inspect <vmid>` | plan; with `--yes` snapshots, mounts read-only, runs the 12 guest checks, tears down | only with `--yes` |
 | `convert <vmid>` | plan; with `--yes` builds a **new** container from the VM | only with `--yes` |
 | `undo <ct>` | shows what it will do; with `--yes` destroys the container and starts the VM again | only with `--yes` |
@@ -141,6 +141,10 @@ follows the run, and Esc, Back or Quit always mean "nothing ran". No whiptail, o
 the same flow as plain numbered prompts. For unattended runs, `vm2lxc menu --answers FILE` takes every answer from a
 file and executes only if the file says `continue=yes` **and** you pass `--yes`.
 Design and rails: [`docs/menu.html`](docs/menu.html).
+After every run you get a **result screen**, not a log: SUCCESS, FAILED or CANCELLED on top, what happened in plain words,
+a numbered *What to do next* list with the exact commands (`pct config`, `pct start`, Undo, `cleanup`), the warnings that
+matter, and the full log underneath. Scan and Preflight in the menu ask whether to *look inside* the disks (read-only
+snapshots, a progress bar) or give the config-only answer; Esc or Back runs nothing.
 
 **USB devices.** A VM with `usbN: host=0bda:8153` (or `host=1-2`) is yellow, not red: after the VM has stopped,
 `convert` looks the device up on the host and gives the container a `devN` entry for its USB node, plus its
@@ -157,10 +161,11 @@ $ vm2lxc preflight 603
 vm2lxc preflight 603  "vm2lxc-test-deb12-2disk"
   node hex | PVE 9.2.28 | live host
 
-VERDICT: GREEN (provisional)
-  No blockers in the VM config. 12 guest-internal checks still need disk inspection, so this is not a go-ahead.
+VERDICT: GREEN
+  No blockers in the VM config or inside the guest: all 12 guest checks ran.
 
 Findings
+  [info]   guest OS: Debian GNU/Linux 12 (bookworm) (detected ostype: debian)
   [info]   2 disks map to scsi0 -> rootfs, scsi1 -> mp0 (extra disks become container mount points)
 
 Disks
@@ -168,7 +173,11 @@ Disks
   scsi1     local-lvm (lvmthin)          8G      -> mp0
 ```
 
-The verdict is **provisional** until the guest has been looked inside (`inspect` or `convert`). What turns a VM red or
+`preflight` and `scan` **look inside the disk by default**: a read-only snapshot, read-only mounts, the 12 guest checks,
+everything removed again (the same engine as `inspect --yes`, with its journal, lock and teardown on Ctrl-C). A VM whose
+config already makes it RED is not looked at; one that cannot be (locked, storage not supported yet, a failed mount) is
+reported *not checked* with the reason and never stops the scan. `--no-inspect` or `--dry-run` give the config-only answer,
+and then the verdict is **provisional**. What turns a VM red or
 yellow *from its config alone*: PCI passthrough, Windows or non-Linux `ostype`, appliance names (pfSense, TrueNAS, ...),
 virtiofs passthrough, USB passthrough (yellow: `convert` maps the device into the container when it finds exactly one match, see below), custom QEMU `args`, a TPM, raw host disks, a template or locked VM, an unsupported PVE
 version, and storage vm2lxc cannot snapshot yet (tagged `(v1 limit)` so it is not mistaken for a fault of the VM).
@@ -315,7 +324,7 @@ stateDiagram-v2
 
 A tool that runs as root on a hypervisor and destroys things has to be built as if every line will meet a bad day.
 The full designs, with failure matrices, are in [`docs/snapshot-layer.html`](docs/snapshot-layer.html) (rails R1-R21),
-[`docs/convert.html`](docs/convert.html) (rails R22-R29 and R39, USB) and [`docs/menu.html`](docs/menu.html) (rails R30-R38, the menu). In short:
+[`docs/convert.html`](docs/convert.html) (rails R22-R29 and R39, USB; R40, the look inside by scan and preflight, is in [`docs/snapshot-layer.html`](docs/snapshot-layer.html)) and [`docs/menu.html`](docs/menu.html) (rails R30-R38, the menu). In short:
 
 1. **The source is never written.** It is only the origin of a snapshot. A VM's only changes are a graceful shutdown,
    `onboot 0`, and (by `undo`) start and `onboot 1`. Its disk was sha256-checked before and after a real conversion.
@@ -382,11 +391,12 @@ its cloud image ships the packages and a stock `multipath.conf`.
 Also: the read-only engine underneath (`inspect`) was crash-tested with 61 injected `SIGKILL`/`SIGTERM`/`SIGHUP` runs on
 the same host, and an independent fresh-context review found 12 issues, all fixed (rails R1-R21).
 
-**477 tests** (0 skipped when `strace` is installed; one test skips without it), `shellcheck` clean. A stateful fake of `zfs`, LVM, `losetup`, `mount`, `qm` and `pct` drives
+**506 tests** (0 skipped when `strace` is installed; one test skips without it), `shellcheck` clean. A stateful fake of `zfs`, LVM, `losetup`, `mount`, `qm` and `pct` drives
 every row of the failure matrix. Every safety rail was **mutation-tested**: revert it, and a test goes red (more than 80
 reversals; the few that first survived exposed real gaps in the tests, and were closed). The menu's rails (R30-R38) got
 the same treatment: 43 reversals, all caught, after three tests that first let one through were strengthened. So did the USB
-rail (R39): 15 reversals, all caught.
+rail (R39): 15 reversals, all caught, and the look inside (R40) and the menu's result screen: 17 reversals, all caught after two
+tests that first let one through were strengthened.
 
 ## Command reference
 
@@ -444,7 +454,7 @@ against canned data and a fake storage host. See [CONTRIBUTING.md](CONTRIBUTING.
 | `lib/pve.sh` | the **only** file that reads the host (`qm config`, `pvesh get`, `pvesm`), with a fixture mode |
 | `lib/qmconf.sh`, `lib/storage.sh`, `lib/sizing.sh` | `qm config` and `pvesm status` parsing; RRD statistics |
 | `lib/findings.sh`, `lib/checks_cfg.sh`, `lib/checks_guest.sh`, `lib/guestfs.sh` | the verdict engine, the config checks, the 12 guest checks, and the chroot-style guest reader |
-| `lib/preflight.sh`, `lib/scan.sh` | the read-only commands |
+| `lib/preflight.sh`, `lib/scan.sh` | the commands that rank and judge a VM (they look inside through `inspect_overlay` in `lib/inspect.sh`) |
 | `lib/snapplan.sh` | the pure snapshot plan |
 | `lib/hostexec.sh` | **the only file that may change the host**: allowlist, journal, lock, handlers, teardown |
 | `lib/inspect.sh`, `lib/convert.sh` | `inspect`, `cleanup`, `convert`, `undo` |

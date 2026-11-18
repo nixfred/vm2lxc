@@ -73,6 +73,11 @@ Inspect, Undo and Clean up use the same hub with nothing to edit.</p>
 <p><b>Progress</b>: a gauge per run, driven by the engine (section 5), then a result screen with everything the engine printed. If the run failed the
 result says so and points at <code>vm2lxc cleanup</code>. The result is also left in the terminal's scrollback.</p>
 
+<h3>The result screen (added 2026-11-18)</h3>
+<p>Fred, after converting a test VM on hex: "Where is the success screen? I don't know what to do next." The first version showed the raw engine log, which begins with the plan, so the result was scrolled out of sight. Now every run ends on a <b>result screen</b>: a <b>SUCCESS</b>, <b>FAILED</b> or <b>CANCELLED</b> line first, what happened in plain words, a numbered <b>WHAT TO DO NEXT</b> list with the exact commands (<code>pct config</code>, <code>pct start</code>, <code>pct exec &lt;ct&gt; -- ip -br a</code>, Undo, <code>cleanup</code>), the warnings that matter (never run the VM and the container together; the Tailscale one-node note), and <b>the full log underneath</b> in the same box. On failure it adds <b>WHY</b> (the engine's own reason lines), tells you to check the VM, to run <code>cleanup</code> (it only lists), and that the VM's disks were never written. Ctrl-C is CANCELLED, not a mystery failure. The summary is built from the exit code and the facts the engine printed, and is tested for every action and outcome (<code>tests/menu.bats</code>, "result screen").</p>
+<h3>Scan and Preflight in the menu</h3>
+<p>They now look inside the disks (R40, <a href="snapshot-layer.html">snapshot-layer.html</a>). Because that takes a read-only snapshot, the menu asks first: <b>Look inside</b> (default; a progress bar that counts VMs for a scan), <b>Config only</b> (fast, provisional), or <b>Back</b>. Esc or Back runs nothing (R31). Under <code>--answers</code> they look inside only when <code>--yes</code> is on the command line.</p>
+
 <h2>4. Rails</h2>
 <p>R1 to R29 are in the two earlier design pages and still apply. These are the menu's own. Every row has tests; a mutation check reverts each rail on
 a copy of the code and the tests that guard it must go red (results in <code>STATUS.md</code>).</p>

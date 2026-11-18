@@ -217,8 +217,17 @@ ct_conf() { cat "$FAKE_STATE/ct/${1:-$CT}/conf"; }
   [ "$(awk '{ print $NF }' <<<"$pcts")" -eq 100 ]
   [ "$(awk '{ print $1 }' <<<"$pcts")" -lt 100 ]
   awk -F'\t' '$1 == "gauge" && NF == 3 { print $3 }' "$WT_LOG" | grep -q 'of [0-9]*)'
-  # the result screen and the log say it worked
-  grep -F 'textbox' "$WT_LOG" | grep -qF 'Finished'
+  # the result screen says it worked, and tells a person what to do next (Fred, 2026-11-18: "Where is the success screen?")
+  grep -F 'textbox' "$WT_LOG" | grep -qF 'SUCCESS'
+  grep -qF 'SUCCESS: VM 100 was converted into container 9100.' "$WT_LOG.text"
+  grep -qF 'The container is STOPPED.' "$WT_LOG.text"
+  grep -qF 'WHAT TO DO NEXT' "$WT_LOG.text"
+  grep -qF 'pct config 9100' "$WT_LOG.text"
+  grep -qF 'pct start 9100' "$WT_LOG.text"
+  grep -qF 'main menu > Undo > container 9100' "$WT_LOG.text"
+  grep -qF 'Never run VM 100 and container 9100 at the same time' "$WT_LOG.text"
+  # the summary comes FIRST, before the plan and the log (the old screen showed the plan and hid the result below it)
+  awk '/SUCCESS: VM 100/ { a = NR } /^FULL LOG OF THIS RUN/ { b = NR } END { exit !(a && b && a < b) }' "$WT_LOG.text"
 }
 
 @test "whiptail hub: an edit makes the viewed plan stale again; a bad container id is refused and asked again; a good one is used" {
@@ -273,20 +282,74 @@ ct_conf() { cat "$FAKE_STATE/ct/${1:-$CT}/conf"; }
 
 # --- whiptail: the other actions ----------------------------------------------------------------------------------
 
-@test "whiptail: Scan shows the engine's own ranked table" {
-  wt_script 'ok scan' 'ok quit'
+@test "whiptail: Scan asks whether to look inside; 'Config only' shows the engine's ranked table and runs nothing on the host" {
+  wt_script 'ok scan' 'ok config' 'ok quit'
   go menu
   [ "$status" -eq 0 ]
   assert_walked
   grep -qF 'textbox' "$WT_LOG"
+  grep -qF '12 VMs' "$WT_LOG.text"
+  grep -qF 'you asked for --no-inspect' "$WT_LOG.text"
+  assert_nothing_ran
+}
+
+@test "whiptail: Scan > Look inside runs the real engine with a progress bar that counts VMs, and shows what it found" {
+  seed_vm100
+  local fx="$BATS_TEST_TMPDIR/scanfx"
+  cp -r "$FIXTURES/pve8" "$fx" # only VM 100 (seeded) and 103 (RED, never looked at): the others have no fake disks
+  jq '[.[] | select(.vmid == 100 or .vmid == 103)]' "$fx/qemu-list.json" >"$fx/q.json" && mv "$fx/q.json" "$fx/qemu-list.json"
+  wt_script 'ok scan' 'ok inside' 'ok quit'
+  VM2LXC_FIXTURE_DIR="$fx" VM2LXC_TEST_EXEC=1 VM2LXC_RUN_ID=rtest01 run "$VM2LXC" menu
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  assert_walked
+  # one bar, counting VMs (never backwards), ending at 100
+  local pcts
+  pcts=$(awk -F'\t' '$1 == "gauge" && NF == 3 { print $2 }' "$WT_LOG" | tr '\n' ' ')
+  [ "$(awk '{ for (i = 2; i <= NF; i++) if ($i < $(i-1)) bad = 1; print bad + 0 }' <<<"$pcts")" -eq 0 ] || { echo "the bar went backwards: $pcts"; return 1; }
+  [ "$(awk '{ print $NF }' <<<"$pcts")" -eq 100 ]
+  awk -F'\t' '$1 == "gauge" && NF == 3 { print $3 }' "$WT_LOG" | grep -q 'Looking at a VM (1 of '
+  # the table is the engine's, and VM 100 really was looked inside; 103 is RED from its config and is not
+  grep -qF 'ran on 1 VM(s)' "$WT_LOG.text"
+  grep -qF 'cloud-init is installed' "$WT_LOG.text" # a finding only the inside of the disk can give, shown as the VM's reason
+  assert_nothing_left
+}
+
+@test "whiptail: leaving the Scan question with Esc or Back runs NOTHING" {
+  wt_script 'ok scan' 'esc' 'ok quit'
+  go menu
+  assert_walked
+  assert_nothing_ran
+  wt_script 'ok scan' 'ok back' 'ok quit'
+  go menu
   assert_nothing_ran
 }
 
 @test "whiptail: Preflight on a RED VM shows its verdict (exit 20 is a verdict, not a failure of the menu)" {
-  wt_script 'ok preflight' 'ok 103' 'ok quit'
+  wt_script 'ok preflight' 'ok 103' 'ok inside' 'ok quit'
   go menu
   [ "$status" -eq 0 ]
   assert_walked
+  grep -qF 'VERDICT: RED' "$WT_LOG.text"
+  grep -qF 'its disk was not looked at' "$WT_LOG.text" # a RED VM is never snapshotted
+  assert_nothing_ran
+}
+
+@test "whiptail: Preflight > Look inside shows the final verdict from inside the guest, and the bar ends at 100" {
+  seed_vm100
+  wt_script 'ok preflight' 'ok 100' 'ok inside' 'ok quit'
+  go menu
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  assert_walked
+  grep -qF '12 ran: os-release docker' "$WT_LOG.text"
+  [ "$(awk -F'\t' '$1 == "gauge" && NF == 3 { p = $2 } END { print p }' "$WT_LOG")" -eq 100 ]
+  assert_nothing_left
+}
+
+@test "whiptail: Preflight > Config only never touches the host and says the verdict is provisional" {
+  wt_script 'ok preflight' 'ok 100' 'ok config' 'ok quit'
+  go menu
+  assert_walked
+  grep -qF 'provisional' "$WT_LOG.text"
   assert_nothing_ran
 }
 
@@ -408,7 +471,7 @@ start_menu_mid_run() {
   wait "$MENU_PID" || rc=$?
   [ "$rc" -eq 0 ] || { echo "the menu exited $rc"; cat "$BATS_TEST_TMPDIR/out"; return 1; }
   assert_walked
-  grep -F 'textbox' "$WT_LOG" | grep -qF 'FAILED\ \(exit\ 130\)'
+  grep -F 'textbox' "$WT_LOG" | grep -qF 'CANCELLED\ \(exit\ 130\)'
   # the engine's own handler did the work: nothing left, the VM running again, no container
   assert_nothing_left
   grep -q '^VMSTARTED 100' "$FAKE_STATE/events.log"
@@ -429,9 +492,9 @@ start_menu_mid_run() {
   wait "$MENU_PID" || rc=$?
   [ "$rc" -eq 0 ] || { echo "the menu exited $rc"; cat "$BATS_TEST_TMPDIR/out"; return 1; }
   assert_walked
-  grep -F 'textbox' "$WT_LOG" | grep -qF 'FAILED\ \(exit\ 130\)'
+  grep -F 'textbox' "$WT_LOG" | grep -qF 'CANCELLED\ \(exit\ 130\)'
   grep -q 'teardown is INCOMPLETE' "$BATS_TEST_TMPDIR/out"
-  grep -q 'Look with:  vm2lxc cleanup' "$BATS_TEST_TMPDIR/out"
+  grep -q 'See whether anything was left behind:  ' "$BATS_TEST_TMPDIR/out"
   must_fail compgen -G "$TMPDIR/vm2lxc-menu.*"
   # the advice works: cleanup finishes it, the VM runs again, nothing is left
   unset FAKE_SLEEP_DESTROY
@@ -655,4 +718,82 @@ af() { # <name>: an answers file from stdin
   [ "$status" -eq 0 ]
   [[ $output == *"Done. Container 900"* ]]
   [[ $output != *$'P\tmount'* ]]
+}
+
+# --- the result screen: what happened, and what to do next (Fred, 2026-11-18) ---------------------------------------------
+
+summary() { # <exit code> <log text> <engine args...>: the top of the result screen
+  load_libs common ui menu
+  UI_TMP="$BATS_TEST_TMPDIR/ui"
+  mkdir -p "$UI_TMP"
+  UI_RUN_RC=$1
+  printf '%s\n' "$2" >"$UI_TMP/run.log"
+  shift 2
+  VM2LXC_SELF=/root/vm2lxc-src/vm2lxc menu_result_summary "$@"
+}
+
+@test "result screen, convert succeeded and the container was NOT started: says so and gives the cutover command" {
+  run summary 0 'Done.' convert 603 --ctid 613
+  [[ $output == *"SUCCESS: VM 603 was converted into container 613."* ]]
+  [[ $output == *"The container is STOPPED."* ]]
+  [[ $output == *"WHAT TO DO NEXT"* && $output == *"pct config 613"* && $output == *"pct start 613"* ]]
+  [[ $output == *"pct exec 613 -- ip -br a"* && $output == *"main menu > Undo > container 613"* ]]
+  [[ $output == *"Never run VM 603 and container 613 at the same time"* ]]
+  [[ $output != *"Tailscale"* ]]
+}
+
+@test "result screen, convert with --start: the container is RUNNING and there is no 'pct start' step to do" {
+  run summary 0 'Done.' convert 603 --ctid 613 --start
+  [[ $output == *"The container is RUNNING."* ]]
+  [[ $output != *"pct start"* ]]
+  [[ $output == *"pct config 613"* ]]
+}
+
+@test "result screen, convert of a Tailscale guest repeats the one-node warning" {
+  run summary 0 'Tailscale state was copied: the VM and the container are ONE node.' convert 601 --ctid 611
+  [[ $output == *"Tailscale: the VM and the container are ONE node. Do not run both."* ]]
+}
+
+@test "result screen, undo succeeded: says the container is gone, repeats the engine's line, and what to do next" {
+  run summary 0 $'Undone. Container 613 is gone and VM 603 is running again.' undo 613
+  [[ $output == *"SUCCESS: container 613 was destroyed and the conversion is undone."* ]]
+  [[ $output == *"Undone. Container 613 is gone and VM 603 is running again."* ]]
+  [[ $output == *"WHAT TO DO NEXT"* && $output == *"qm status"* && $output == *"main menu > Convert"* ]]
+}
+
+@test "result screen, inspect and cleanup succeeded: each says what it did and what is next" {
+  run summary 0 $'Guest verdict: GREEN (VM-config checks: run vm2lxc preflight)' inspect 603
+  [[ $output == *"SUCCESS: the disk of VM 603 was looked at, and everything mounted for it was removed again."* ]]
+  [[ $output == *"Guest verdict: GREEN"* && $output == *"main menu > Convert > VM 603"* ]]
+  run summary 0 'x' cleanup
+  [[ $output == *"SUCCESS: the leftovers of unfinished runs were removed"* && $output == *"Nothing. Go back to the main menu."* ]]
+}
+
+@test "result screen, a failed convert: FAILED with the reason lines, the VM's state, cleanup, and that the VM's disks are untouched" {
+  run summary 77 $'vm2lxc convert 603\nvm2lxc: the guest cannot be converted (RED, see above). Nothing was kept.\n  [RED] Docker/Podman/containerd found' convert 603 --ctid 613
+  [[ $output == *"FAILED (exit 77): the convert did not complete."* ]]
+  [[ $output == *"WHY"* && $output == *"vm2lxc: the guest cannot be converted"* && $output == *"[RED] Docker/Podman/containerd found"* ]]
+  [[ $output == *"WHAT TO DO NEXT"* && $output == *"qm status 603"* ]]
+  [[ $output == *"/root/vm2lxc-src/vm2lxc cleanup"* && $output == *"add --yes to remove what it lists"* ]]
+  [[ $output == *"The VM's own disks were never written, so it is unchanged."* ]]
+  [[ $output != *"SUCCESS"* ]]
+}
+
+@test "result screen, Ctrl-C is CANCELLED, not a mystery failure" {
+  run summary 130 'x' convert 603 --ctid 613
+  [[ $output == *"CANCELLED (exit 130): you pressed Ctrl-C. The run was stopped and cleaned up."* ]]
+  [[ $output == *"WHAT TO DO NEXT"* ]]
+}
+
+@test "whiptail: a conversion that FAILS shows the failure screen with the reason and next steps, and the menu carries on" {
+  seed_vm100
+  FAKE_FAIL=pct.create:1 wt_script 'ok convert' 'ok 100' 'ok continue' 'ok quit'
+  FAKE_FAIL=pct.create:1 go menu
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  assert_walked
+  grep -F 'textbox' "$WT_LOG" | grep -qF 'FAILED'
+  grep -qF 'WHAT TO DO NEXT' "$WT_LOG.text"
+  grep -qF 'qm status 100' "$WT_LOG.text"
+  grep -qF "The VM's own disks were never written" "$WT_LOG.text"
+  assert_nothing_left
 }

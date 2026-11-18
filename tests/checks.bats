@@ -262,8 +262,8 @@ setup() {
   [ "$N_PENDING" -eq 12 ]
   [ "$VERDICT" = green ]
   [ "${#GUEST_RAN[@]}" -eq 0 ]
-  has_finding pending guest-docker "needs disk inspection (not yet)"
-  has_finding pending guest-nested-virt "needs disk inspection (not yet)"
+  has_finding pending guest-docker "not checked, the disk was not looked at"
+  has_finding pending guest-nested-virt "not checked, the disk was not looked at"
 }
 
 @test "guest checks: every registered id has a title (no id without a plain-words label)" {

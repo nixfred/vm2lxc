@@ -23,6 +23,7 @@ EXIT_REFUSED=77 # a safety rail refused an action (see docs/snapshot-layer.html)
 OPT_YES=0
 OPT_DRY_RUN=0
 OPT_NO_TUI=0
+OPT_NO_INSPECT=0
 OPT_ANSWERS=""
 OPT_NODE=""
 OPT_HELP=0
@@ -99,8 +100,10 @@ Commands:
   menu               the interactive menu (whiptail, or plain prompts): pick a VM, review the
                      plan and the settings on one screen, then Continue. It only runs this same
                      program with the flags it shows you, and changes nothing until you Continue
-  preflight <vmid>   read-only convertibility check: verdict, reasons, sizing
-  scan [vmid...]     rank the VMs on this node (or just the ones named) by verdict and RAM saved
+  preflight <vmid>   convertibility check: verdict, reasons, sizing. Unless --no-inspect, it also looks
+                     inside the VM's disk (read-only snapshot, torn down again) for the 12 guest checks
+  scan [vmid...]     rank the VMs on this node (or just the ones named) by verdict and RAM saved;
+                     like preflight it looks inside each disk that the VM config did not already rule out
   inspect <vmid>     show the plan to mount the VM's disks read-only from storage
                      snapshots; with --yes, do it, look inside, and tear it all down
   cleanup            tear down anything a crashed inspect left behind (lists first,
@@ -122,7 +125,9 @@ Options:
   --answers FILE     menu only: take every answer from FILE (key=value lines: action, vm, ct, ctid,
                      hostname, memory, cores, privileged, start, continue) and ask nothing. It
                      executes only with continue=yes in the file AND --yes on the command line
-  --dry-run          show what would happen (preflight and scan are always read-only)
+  --no-inspect       preflight and scan: do NOT look inside the disks, config checks only (nothing is
+                     snapshotted or mounted). --dry-run does the same
+  --dry-run          show what would happen; for preflight and scan it means --no-inspect
   --no-tui           menu only: plain prompts, no whiptail
   --node NAME        PVE node name (default: this host's short hostname)
   -h, --help         this text
@@ -132,9 +137,10 @@ Exit codes: 0 green, 10 yellow, 20 red (preflight only); 64 bad usage;
 65 the VM's disks cannot be planned; 66 VM not found; 69 environment problem (not root, not PVE, missing tool);
 77 a safety rail refused an action (or a RED verdict stopped convert).
 
-Run as root on a Proxmox VE 8.x/9.x node. preflight and scan only read. inspect, convert,
-undo and cleanup change things only with --yes, and only objects they recorded in their own
-journal: snapshots named vm2lxc-..., and the one container convert creates (tagged
-vm2lxc-<run>). A VM's disks are never written.
+Run as root on a Proxmox VE 8.x/9.x node. preflight and scan read the VM config and, unless
+--no-inspect or --dry-run, look inside each disk through a read-only snapshot of it that they tear
+down again. inspect, convert, undo and cleanup change things only with --yes. Everything any of them
+creates is recorded in a journal first: snapshots named vm2lxc-..., and the one container convert
+creates (tagged vm2lxc-<run>). A VM's disks are never written.
 EOF
 }

@@ -16,13 +16,13 @@ load helpers
   [[ $output == *'vm2lxc preflight 100  "web-green"'* ]]
   [[ $output == *"node pve-test | PVE 8.2.4 | FIXTURE MODE"* ]]
   [[ $output == *"VERDICT: GREEN (provisional)"* ]]
-  [[ $output == *"12 guest-internal checks still need disk inspection (not implemented yet)"* ]]
+  [[ $output == *"12 guest-internal checks were not run (fixture mode never executes)"* ]]
   [[ $output == *"rrddata timeframe=month, 35.0 days of data, 100% of samples, confidence HIGH"* ]]
   [[ $output == *"memory  p95 790M  max 800M  now 4096M"* ]]
   [[ $output == *"choices: lean 960M | recommended 1024M | keep 4096M"* ]]
   [[ $output == *'RAM saved at "recommended": 3072M'* ]]
   [[ $output == *"cpu     p95 0.68 cores  max 0.68 cores  now 4"* ]]
-  [[ $output == *"Nothing was changed: preflight only reads."* ]]
+  [[ $output == *"Nothing was changed: no disk was looked at, only the VM config was read."* ]]
 }
 
 @test "multi-disk VM: boot disk is rootfs, the other disk is mp0, total allocated is shown" {
@@ -117,7 +117,7 @@ load helpers
 
 @test "every guest-internal check is listed as pending, none pretends to have run" {
   run_fx preflight 100
-  [[ $output == *"12 pending, they need disk inspection (not implemented yet): os-release, docker, kernel-modules, nfs-server, cloud-init, snap, fstab-netmounts, tailscale, uid-range, disk-layers, iscsi-multipath, nested-virt"* ]]
+  [[ $output == *"12 not checked (fixture mode never executes): os-release, docker, kernel-modules, nfs-server, cloud-init, snap, fstab-netmounts, tailscale, uid-range, disk-layers, iscsi-multipath, nested-virt"* ]]
   [[ $output != *"ran:"* ]]
 }
 

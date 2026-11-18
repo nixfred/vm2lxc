@@ -56,6 +56,7 @@ parse_args() {
       --yes) OPT_YES=1 ;;
       --dry-run) OPT_DRY_RUN=1 ;;
       --no-tui) OPT_NO_TUI=1 ;;
+      --no-inspect) OPT_NO_INSPECT=1 ;;
       --answers)
         (($# >= 2)) || die "$EXIT_USAGE" "--answers needs a FILE"
         OPT_ANSWERS=$2

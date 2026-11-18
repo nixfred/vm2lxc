@@ -13,7 +13,19 @@ cmd_preflight() {
   vm_context_load "$vmid" ||
     die "$EXIT_NOINPUT" "VM $vmid not found on node $PVE_NODE_NAME, or its config could not be read (is it a container?)"
   cfg_checks_run
-  guest_checks_run
+  verdict_compute
+  # R40: look inside the disk too, unless the config already rules the VM out or --no-inspect / --dry-run says not to
+  INSPECT_OVERLAY_ON=1
+  PREFLIGHT_INSPECTED=0
+  if [[ $VERDICT == red ]]; then
+    GUEST_PENDING_WHY="the VM config already rules it out (RED), so its disk was not looked at"
+    guest_checks_run
+  elif inspect_overlay "$vmid"; then
+    PREFLIGHT_INSPECTED=1
+  else
+    GUEST_PENDING_WHY=$INSPECT_OVERLAY_WHY
+    guest_checks_run
+  fi
   verdict_compute
   sizing_collect "$vmid"
   sizing_judge "$(qmc_memory_mb)" "$(qmc_cores)"
@@ -33,12 +45,16 @@ verdict_label() { # green|yellow|red -> coloured upper-case word
 preflight_banner() {
   local pend_note=""
   if ((N_PENDING > 0)); then
-    pend_note="$N_PENDING guest-internal checks still need disk inspection (not implemented yet)"
+    pend_note="$N_PENDING guest-internal checks were not run (${GUEST_PENDING_WHY})"
   fi
   printf 'VERDICT: %s' "$(verdict_label "$VERDICT")"
   case $VERDICT in
     green)
-      printf ' (provisional)\n  No blockers in the VM config. %s, so this is not a go-ahead.\n' "${pend_note:-All checks ran}"
+      if ((N_PENDING > 0)); then
+        printf ' (provisional)\n  No blockers in the VM config. %s, so this is not a go-ahead.\n' "$pend_note"
+      else
+        printf '\n  No blockers in the VM config or inside the guest: all %d guest checks ran.\n' "${#GUEST_RAN[@]}"
+      fi
       ;;
     yellow)
       printf '\n  Convertible with caveats: read the YELLOW items below.%s\n' "${pend_note:+ Also: $pend_note.}"
@@ -129,7 +145,7 @@ preflight_render() {
   printf '\nDisks\n'
   preflight_disks
   if total=$(disks_total_mb); then
-    printf '  allocated: %s; used space needs disk inspection (not yet)\n' "$(fmt_mb "$total")"
+    printf '  allocated: %s (used space is not measured; the container is sized from the allocation)\n' "$(fmt_mb "$total")"
   fi
   printf '\nNetwork\n'
   preflight_nics
@@ -137,11 +153,15 @@ preflight_render() {
   sizing_print
   printf '\nGuest checks\n'
   if ((${#GUEST_PENDING[@]} > 0)); then
-    printf '  %d pending, they need disk inspection (not implemented yet): %s\n' \
-      "${#GUEST_PENDING[@]}" "$(printf '%s, ' "${GUEST_PENDING[@]}" | sed 's/, $//')"
+    printf '  %d not checked (%s): %s\n' \
+      "${#GUEST_PENDING[@]}" "$GUEST_PENDING_WHY" "$(printf '%s, ' "${GUEST_PENDING[@]}" | sed 's/, $//')"
   fi
   if ((${#GUEST_RAN[@]} > 0)); then
     printf '  %d ran: %s\n' "${#GUEST_RAN[@]}" "${GUEST_RAN[*]}"
   fi
-  printf '\nNothing was changed: preflight only reads.\n'
+  if ((PREFLIGHT_INSPECTED)); then
+    printf '\nNothing was changed. The disk was looked at through a read-only snapshot, which is already removed again.\n'
+  else
+    printf '\nNothing was changed: no disk was looked at, only the VM config was read.\n'
+  fi
 }

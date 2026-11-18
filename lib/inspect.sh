@@ -39,6 +39,11 @@ INSPECT_OUT_FD=1 INSPECT_ERR_FD=2
 run_arm_traps() {
   exec {INSPECT_OUT_FD}>&1 {INSPECT_ERR_FD}>&2
   INSPECT_ARMED=1
+  inspect_traps_on
+}
+# the signal and exit traps alone (no new file descriptors), so a loop over several VMs can switch them back on
+# after it ignored the signals during a teardown
+inspect_traps_on() {
   trap inspect_trap EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -116,6 +121,124 @@ inspect_revalidate() { # <vmid> <run>
     printf 'vm2lxc: VM %s changed (its disks or paths) between the plan and the start of the run\n' "$1" >&2
     return 1
   fi
+}
+
+# --- the default look inside, for scan and preflight (rail R40) --------------------------------------------------
+# Fred, 2026-11-18, shown the preflight screen that said "12 guest checks need disk inspection (not implemented
+# yet)": scan and preflight always look inside. They use THIS engine, the same one `inspect --yes` uses: run lock, a
+# write-ahead journal, a read-only snapshot, read-only mounts, teardown that also runs on Ctrl-C. A VM that cannot be
+# looked at (locked, its storage not supported yet, a mount that failed) is reported "not checked" with the reason
+# and never aborts the scan. --no-inspect and --dry-run give the old config-only behaviour; fixture mode never
+# executes.
+INSPECT_OVERLAY_ON=0 INSPECT_OVERLAY_WHY="" INSPECT_LOCK=0 INSPECT_BROKEN=0 INSPECT_RUN_N=0 INSPECT_TRAPS=0
+
+# inspect_overlay_wanted: rc 0 look inside; rc 1 not, and INSPECT_OVERLAY_WHY is the reason in words
+inspect_overlay_wanted() {
+  if ((!INSPECT_OVERLAY_ON)); then
+    INSPECT_OVERLAY_WHY="this listing does not look inside disks"
+  elif ((OPT_NO_INSPECT)); then
+    INSPECT_OVERLAY_WHY="you asked for --no-inspect"
+  elif ((OPT_DRY_RUN)); then
+    INSPECT_OVERLAY_WHY="this is a dry run"
+  elif pve_fixture_mode && [[ ${VM2LXC_TEST_EXEC:-} != 1 ]]; then
+    INSPECT_OVERLAY_WHY="fixture mode never executes"
+  elif ((INSPECT_BROKEN)); then
+    INSPECT_OVERLAY_WHY="an earlier teardown was incomplete, run: vm2lxc cleanup --yes"
+  else
+    return 0
+  fi
+  return 1
+}
+
+# inspect_overlay_teardown <run>: tear the run down with the signals ignored, then switch the traps back on
+inspect_overlay_teardown() {
+  local rc=0
+  INSPECT_ARMED=0
+  trap '' INT TERM HUP PIPE QUIT
+  run_teardown "$1" >/dev/null 2>&"$INSPECT_ERR_FD" || rc=$?
+  inspect_traps_on
+  if ((rc != 0)); then
+    INSPECT_BROKEN=1
+    printf 'vm2lxc: the teardown of run %s is INCOMPLETE. Nothing was lost: run "vm2lxc cleanup --yes" to finish it.\n' "$1" >&2
+  fi
+  return "$rc"
+}
+
+# inspect_overlay <vmid>: the VM's context is loaded and its VM-config findings are collected. Look inside, run the 12
+# guest checks, add their findings to the pile (GUEST_RAN / GUEST_PENDING are set), tear down.
+#   rc 0 the guest checks ran      rc 1 not looked at (INSPECT_OVERLAY_WHY says why; the findings are unchanged)
+inspect_overlay() {
+  local vmid=$1 run lock rc=0 i
+  local -a s_level s_id s_kind s_msg
+  inspect_overlay_wanted || return 1
+  lock=$(qmc_get lock)
+  if [[ -n $lock ]]; then
+    INSPECT_OVERLAY_WHY="the VM is locked (lock: $lock): another operation is working on it, so its disks are not snapshotted now"
+    return 1
+  fi
+  if ((INSPECT_LOCK == 0)); then
+    if lock_acquire; then INSPECT_LOCK=1; else INSPECT_LOCK=-1; fi
+  fi
+  if ((INSPECT_LOCK < 0)); then
+    INSPECT_OVERLAY_WHY="another vm2lxc run holds the lock"
+    return 1
+  fi
+  INSPECT_RUN_N=$((INSPECT_RUN_N + 1))
+  # Test seam: with VM2LXC_RUN_ID=rtest01 the n-th look inside uses rtest01, rtest02, ... so a fake host can be seeded
+  # for each. Without it (always, in real use) every run gets a fresh random id.
+  if [[ ${VM2LXC_RUN_ID:-} =~ ^(.*[a-z])([0-9]+)$ ]]; then
+    run=$(printf '%s%0*d' "${BASH_REMATCH[1]}" "${#BASH_REMATCH[2]}" $((10#${BASH_REMATCH[2]} + INSPECT_RUN_N - 1)))
+  elif [[ -n ${VM2LXC_RUN_ID:-} ]] && ((INSPECT_RUN_N == 1)); then
+    run=$VM2LXC_RUN_ID
+  else
+    run=$(snap_gen_run_id)
+  fi
+  snap_plan_build "$vmid" "$run" || {
+    INSPECT_OVERLAY_WHY="its disks cannot be planned for a snapshot: $PLAN_ERR"
+    return 1
+  }
+  snap_plan_executable || {
+    INSPECT_OVERLAY_WHY=$PLAN_ERR
+    return 1
+  }
+  journal_new "$vmid" "$run" || {
+    INSPECT_OVERLAY_WHY="the journal under $(state_dir) could not be created"
+    return 1
+  }
+  CT_ID=""
+  if ((!INSPECT_TRAPS)); then
+    run_arm_traps
+    INSPECT_TRAPS=1
+  else
+    INSPECT_ARMED=1
+    inspect_traps_on
+  fi
+  if [[ -z ${VM2LXC_PROGRESS_FILE:-} ]]; then # inside the menu the progress bar says it instead
+    printf 'vm2lxc: looking inside VM %s (read-only snapshot, run %s) ...\n' "$vmid" "$run" >&2
+  fi
+  run_apply >/dev/null || rc=$?
+  if ((rc != 0)); then
+    inspect_overlay_teardown "$run" || true
+    INSPECT_OVERLAY_WHY="the snapshot or the read-only mount failed (exit $rc); everything created was torn down"
+    return 1
+  fi
+  s_level=("${F_LEVEL[@]}") s_id=("${F_ID[@]}") s_kind=("${F_KIND[@]}") s_msg=("${F_MSG[@]}")
+  findings_reset
+  progress_emit checks 1 1 guest-checks
+  if ! pick_guest_root; then GUEST_ROOT=""; fi
+  GUEST_PENDING_WHY="no Linux root filesystem (etc + usr or bin) was found on the boot disk"
+  guest_checks_run
+  local -a g_level=("${F_LEVEL[@]}") g_id=("${F_ID[@]}") g_kind=("${F_KIND[@]}") g_msg=("${F_MSG[@]}")
+  findings_reset
+  for i in "${!s_level[@]}"; do finding "${s_level[$i]}" "${s_id[$i]}" "${s_kind[$i]}" "${s_msg[$i]}"; done
+  for i in "${!g_level[@]}"; do finding "${g_level[$i]}" "${g_id[$i]}" "${g_kind[$i]}" "${g_msg[$i]}"; done
+  verdict_compute
+  inspect_overlay_teardown "$run" || true
+  if ((${#GUEST_RAN[@]} == 0)); then
+    INSPECT_OVERLAY_WHY=$GUEST_PENDING_WHY
+    return 1
+  fi
+  return 0
 }
 
 cmd_inspect() {

@@ -35,6 +35,7 @@ declare -gA GUEST_CHECK_TITLE=(
 )
 
 GUEST_RAN=() GUEST_PENDING=()
+GUEST_PENDING_WHY="the disk was not looked at" # set by whoever knows why (preflight, scan, the overlay)
 
 guest_checks_run() {
   local id fn
@@ -45,7 +46,7 @@ guest_checks_run() {
       "$fn" "$GUEST_ROOT" || true # a check whose last test was negative must not abort the run
       GUEST_RAN+=("$id")
     else
-      finding pending "guest-$id" guest "${GUEST_CHECK_TITLE[$id]}: needs disk inspection (not yet)"
+      finding pending "guest-$id" guest "${GUEST_CHECK_TITLE[$id]}: not checked, $GUEST_PENDING_WHY"
       GUEST_PENDING+=("$id")
     fi
   done

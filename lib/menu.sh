@@ -42,15 +42,99 @@ menu_execute() {
   ui_run "$action" "$title" "$UI_TMP/run.log" -- "${MENU_GLOBALS[@]}" "$@" --yes
 }
 
-# menu_result: what the engine printed, and what to do if it failed. Also left in the terminal's scrollback.
+# menu_result_summary <command> <subject> <args...>: the top of the result screen. Plain words, the exact commands to
+# type next, and the warnings that matter. It states what the run did from the exit code and from the facts the engine
+# printed, never from hope; the full log follows it in the same box.
+menu_result_summary() {
+  local cmd=${1:-} subject=${2:-} rc=$UI_RUN_RC self=$VM2LXC_SELF a ct="" started=0 line
+  shift 2 || true
+  for a in "$@"; do
+    [[ $a == --start ]] && started=1
+  done
+  while (($#)); do
+    if [[ $1 == --ctid && -n ${2:-} ]]; then ct=$2; fi
+    shift
+  done
+  if ((rc == 0)); then
+    case $cmd in
+      convert)
+        printf 'SUCCESS: VM %s was converted into container %s.\n\n' "$subject" "$ct"
+        if ((started)); then
+          printf 'The container is RUNNING. VM %s is stopped and will not start at boot.\n' "$subject"
+        else
+          printf 'The container is STOPPED. VM %s is stopped and will not start at boot.\n' "$subject"
+        fi
+        printf '\nWHAT TO DO NEXT\n'
+        printf '  1. Look at it:        pct config %s\n' "$ct"
+        if ((!started)); then printf '  2. Cut over (start):  pct start %s\n' "$ct"; fi
+        printf '  3. Check it came up:  pct exec %s -- ip -br a      (or: pct enter %s)\n' "$ct" "$ct"
+        printf '  4. Changed your mind: main menu > Undo > container %s\n' "$ct"
+        printf '                        (destroys the container, starts VM %s again)\n' "$subject"
+        printf '\nIMPORTANT\n'
+        printf '  Never run VM %s and container %s at the same time: they share one MAC address.\n' "$subject" "$ct"
+        printf '  What is written inside the container after today is lost by Undo.\n'
+        if grep -q 'Tailscale state was copied' "$UI_TMP/run.log" 2>/dev/null; then
+          printf '  Tailscale: the VM and the container are ONE node. Do not run both.\n'
+        fi
+        ;;
+      undo)
+        printf 'SUCCESS: container %s was destroyed and the conversion is undone.\n\n' "$subject"
+        line=$(grep -E '^Undone\.' "$UI_TMP/run.log" 2>/dev/null | head -1 || true)
+        if [[ -n $line ]]; then printf '%s\n\n' "$line"; fi
+        printf 'WHAT TO DO NEXT\n'
+        printf '  1. Check the VM:        qm status <vm id>\n'
+        printf '  2. Convert again:       main menu > Convert\n'
+        printf '  3. Nothing is left over: %s cleanup   (lists only)\n' "$self"
+        ;;
+      inspect)
+        printf 'SUCCESS: the disk of VM %s was looked at, and everything mounted for it was removed again.\n\n' "$subject"
+        line=$(grep -E '^Guest verdict:' "$UI_TMP/run.log" 2>/dev/null | head -1 || true)
+        if [[ -n $line ]]; then printf '%s\n\n' "$line"; fi
+        printf 'WHAT TO DO NEXT\n'
+        printf '  1. Read the [RED] and [YELLOW] lines in the log below.\n'
+        printf '  2. No RED: main menu > Convert > VM %s\n' "$subject"
+        printf '  3. RED: the VM cannot be converted as it is. The reason is in the log.\n'
+        ;;
+      cleanup)
+        printf 'SUCCESS: the leftovers of unfinished runs were removed and their journals closed.\n\n'
+        printf 'WHAT TO DO NEXT\n'
+        printf '  Nothing. Go back to the main menu.\n'
+        ;;
+      *)
+        printf 'SUCCESS: finished.\n'
+        ;;
+    esac
+  else
+    case $rc in
+      130) printf 'CANCELLED (exit 130): you pressed Ctrl-C. The run was stopped and cleaned up.\n' ;;
+      *) printf 'FAILED (exit %s): the %s did not complete.\n' "$rc" "$cmd" ;;
+    esac
+    printf '\nWHY\n'
+    grep -E '^(vm2lxc:|  \[RED\])' "$UI_TMP/run.log" 2>/dev/null | tail -6 | sed 's/^/  /' || true
+    printf '\nWHAT TO DO NEXT\n'
+    printf '  1. Read the reason above; everything the program printed is in the log below.\n'
+    if [[ $cmd == convert || $cmd == inspect ]]; then
+      printf '  2. Your VM is restarted automatically if it was running. Check:  qm status %s\n' "$subject"
+    fi
+    printf '  3. See whether anything was left behind:  %s cleanup\n' "$self"
+    printf '     (it only lists; add --yes to remove what it lists)\n'
+    printf '  4. Fix the cause, then run it again from the main menu.\n'
+    if [[ $cmd == convert ]]; then
+      printf '\nThe VM'"'"'s own disks were never written, so it is unchanged.\n'
+    fi
+  fi
+}
+
+# menu_result <command> <subject> <args...>: the result screen (summary on top, the full log below) and the same text in
+# the terminal's scrollback.
 menu_result() {
   local rc=$UI_RUN_RC head
-  if ((rc == 0)); then head="Finished"; else head="FAILED (exit $rc)"; fi
+  if ((rc == 0)); then head="SUCCESS"; elif ((rc == 130)); then head="CANCELLED (exit 130)"; else head="FAILED (exit $rc)"; fi
   {
+    menu_result_summary "$@"
+    printf '\n------------------------------------------------------------------------\n'
+    printf 'FULL LOG OF THIS RUN\n\n'
     cat -- "$UI_TMP/run.log"
-    if ((rc != 0)); then
-      printf '\nSomething may be left behind. Look with:  vm2lxc cleanup   (it lists first and removes only with --yes)\n'
-    fi
   } >"$UI_TMP/result.txt"
   ui_text "$head" "$UI_TMP/result.txt"
   if [[ $UI_BACKEND == whiptail ]]; then
@@ -70,7 +154,7 @@ menu_continue() {
     return 1
   fi
   menu_execute "$action" "$title" "$@"
-  menu_result
+  menu_result "$@"
   return 0
 }
 
@@ -250,9 +334,46 @@ menu_convert_hub() {
 # --- the actions ------------------------------------------------------------------------------------------------
 # Every action returns 0 or 1 to go back to the main menu, or 2 when the person asked to leave.
 
+# menu_look <title> <gauge action> <engine args...>: scan and preflight. Looking inside a disk takes a read-only snapshot of
+# it (the engine behind Inspect), so it is a choice made here, with Esc/Back meaning nothing ran. rc 1 back, 2 quit.
+menu_look() {
+  local title=$1 gauge=$2 rc=0
+  shift 2
+  ui_menu "$title" "Look inside the disks too? It takes a read-only snapshot of each disk, mounts it read-only, runs the 12 guest checks and removes it again. No VM is changed. Without it only the VM configuration is read, so the verdict stays provisional." inside \
+    inside ">> Look inside (a few seconds per VM)" \
+    config "Config only (fast, provisional)" \
+    back "Back" \
+    quit "Quit (nothing is run)" || rc=$?
+  case $rc in
+    0) ;;
+    2) return 2 ;;
+    *) return 1 ;;
+  esac
+  case $REPLY in
+    inside)
+      ui_run "$gauge" "$title" "$UI_TMP/run.log" -- "${MENU_GLOBALS[@]}" "$@"
+      case $UI_RUN_RC in
+        0 | 10 | 20) # 10 and 20 are a preflight's YELLOW and RED verdicts, not failures
+          ui_text "$title" "$UI_TMP/run.log"
+          if [[ $UI_BACKEND == whiptail ]]; then cat -- "$UI_TMP/run.log"; fi
+          ;;
+        *) menu_result "$@" ;;
+      esac
+      ;;
+    config)
+      menu_plan "$@" --no-inspect
+      ui_text "$title (config only)" "$UI_TMP/plan.txt"
+      ;;
+    back) return 1 ;;
+    quit)
+      UI_QUIT=1
+      return 2
+      ;;
+  esac
+  return 0
+}
 menu_do_scan() {
-  menu_plan scan
-  ui_text "Scan: every VM, ranked" "$UI_TMP/plan.txt"
+  menu_look "Scan: every VM, ranked" scan scan
 }
 
 menu_do_preflight() {
@@ -264,8 +385,7 @@ menu_do_preflight() {
     *) return 1 ;;
   esac
   vmid=$REPLY
-  menu_plan preflight "$vmid" # its exit code 0/10/20 is the verdict, not a failure
-  ui_text "Preflight: VM $vmid" "$UI_TMP/plan.txt"
+  menu_look "Preflight: VM $vmid" inspect preflight "$vmid"
 }
 
 menu_do_inspect() {
@@ -340,9 +460,9 @@ menu_main() {
   while :; do
     rc=0
     ui_menu "vm2lxc" "What do you want to do? Enter takes the highlighted default, Esc quits. Nothing changes anything until you confirm it on a review screen." scan \
-      scan "Scan: rank every VM by how well it converts   (read-only)" \
-      preflight "Preflight: check one VM   (read-only)" \
-      inspect "Inspect: look inside a VM's disks through snapshots (read-only)" \
+      scan "Scan: rank every VM by how well it converts   (changes no VM)" \
+      preflight "Preflight: check one VM   (changes no VM)" \
+      inspect "Inspect: look inside one VM's disks, with a plan first" \
       convert "Convert a VM into a container" \
       undo "Undo a conversion: the container goes, the VM comes back" \
       cleanup "Clean up what a crashed run left behind" \
@@ -400,10 +520,16 @@ menu_answers() {
     if [[ ${ANSWERS[privileged]:-no} == yes ]]; then args+=(--privileged); fi
     if [[ ${ANSWERS[start]:-no} == yes ]]; then args+=(--start); fi
   fi
+  case $action in
+    scan | preflight)
+      # looking inside takes read-only snapshots: --yes on the command line is the consent, as for everything that executes
+      if ((!OPT_YES)) || ((OPT_DRY_RUN)); then args+=(--no-inspect); fi
+      ;;
+  esac
   menu_plan "${args[@]}"
   cat -- "$UI_TMP/plan.txt"
   case $action in
-    scan | preflight) return "$MENU_RC" ;; # read-only: its own exit code (a preflight verdict)
+    scan | preflight) return "$MENU_RC" ;; # its own exit code (a preflight verdict)
   esac
   if ((MENU_RC != 0)); then return "$MENU_RC"; fi # a refused plan stays refused
   if ((OPT_YES)) && ((!OPT_DRY_RUN)) && [[ ${ANSWERS[continue]:-no} == yes ]]; then
